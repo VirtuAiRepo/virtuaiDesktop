@@ -1,6 +1,7 @@
-# A tag v* builds, signs and notarizes VirtuAI for macOS (Apple silicon) and
-# builds it for Linux, and publishes both as a GitHub Release of that tag.
+# Builds, signs and notarizes VirtuAI for macOS (Apple silicon), builds it
+# for Linux, and publishes both as a GitHub Release. Either:
 #
+#   Actions → Release → Run workflow, version 0.2.0   (tags main as v0.2.0)
 #   git tag v0.2.0 && git push origin v0.2.0
 #
 # The app's version comes from the tag. The runner inside is the CLI release
@@ -19,19 +20,19 @@ on:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Existing tag to (re)build, e.g. v0.2.0"
+      version:
+        description: "Version to release, e.g. 0.2.0 (tags this commit as v0.2.0)"
         required: true
 
 permissions:
   contents: write
 
-concurrency:
-  group: release-${{ github.event.inputs.tag || github.ref_name }}
-  cancel-in-progress: false
-
 env:
-  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   macos:
@@ -39,8 +40,6 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.TAG }}
 
       - uses: actions/setup-node@v4
         with:
@@ -136,10 +135,11 @@ jobs:
           mkdir -p out
           cp src-tauri/target/release/bundle/dmg/*.dmg "out/VirtuAI-${TAG#v}-macos-arm64.dmg"
 
-      - uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ env.TAG }}
-          files: out/*
+          name: macos
+          path: out/*
+          if-no-files-found: error
 
       - name: Remove the keychain
         if: always()
@@ -150,8 +150,6 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.TAG }}
 
       - name: System libraries
         run: |
@@ -192,7 +190,26 @@ jobs:
           cp src-tauri/target/release/bundle/deb/*.deb "out/VirtuAI-${TAG#v}-linux-amd64.deb"
           cp src-tauri/target/release/bundle/appimage/*.AppImage "out/VirtuAI-${TAG#v}-linux-x86_64.AppImage"
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: out/*
+          if-no-files-found: error
+
+  # One job creates the tag (when run from Actions) and the Release, once both
+  # builds have succeeded: nothing half-published.
+  publish:
+    needs: [macos, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          name: VirtuAI ${{ env.TAG }}
           files: out/*

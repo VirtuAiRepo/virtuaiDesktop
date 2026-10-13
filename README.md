@@ -62,18 +62,22 @@ on macOS. The runner's token is in the system keychain.
 
 ## Release
 
+**Actions → Release → Run workflow**, with the version (`0.2.0`): it tags the
+commit `v0.2.0`. Pushing a tag does the same:
+
 ```bash
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
-[`release.yml`](.github/workflows/release.yml) builds the tag:
+[`release.yml`](.github/workflows/release.yml) builds it:
 
 - **macOS (Apple silicon):** signs the runner and the app with the Developer ID
   certificate, notarizes and staples both the app and the disk image, and
   checks the result with Gatekeeper.
 - **Linux:** builds the `.deb` and the AppImage.
 
-Both are published as the tag's Release. The app's version is the tag's.
+Once both have built, one job publishes them as the tag's Release. The app's
+version is the tag's.
 
 It needs these repository secrets:
 
