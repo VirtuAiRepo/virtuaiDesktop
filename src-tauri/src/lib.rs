@@ -407,21 +407,28 @@ struct SettingsView {
     version: &'static str,
 }
 
-#[tauri::command]
+/// Each value is read in a statement of its own. A lock taken inside the
+/// struct literal is held until the literal ends, and `current_workdir` takes
+/// the settings lock again: that deadlocked the main thread and froze the app
+/// with Settings blank (0.2.1).
+#[tauri::command(async)]
 fn get_settings(app: AppHandle, webview: Webview, state: State<'_, AppState>) -> Result<SettingsView, String> {
     own_page(&webview)?;
+    let server = state.settings.lock().unwrap().server_url.clone();
+    let workdir = current_workdir(&app).map(|d| d.display().to_string());
     let connector = state.connector.lock().unwrap().clone();
+    let paused = *state.paused.lock().unwrap();
     Ok(SettingsView {
-        server: state.settings.lock().unwrap().server_url.clone(),
-        workdir: current_workdir(&app).map(|d| d.display().to_string()),
+        server,
+        workdir,
         connector_text: status_text(&connector),
         connector,
-        paused: *state.paused.lock().unwrap(),
+        paused,
         version: env!("CARGO_PKG_VERSION"),
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn current_server(webview: Webview, state: State<'_, AppState>) -> Result<Option<String>, String> {
     own_page(&webview)?;
     Ok(state.settings.lock().unwrap().server_url.clone())
@@ -430,7 +437,7 @@ fn current_server(webview: Webview, state: State<'_, AppState>) -> Result<Option
 /// Saves the server, restarts the connector against it, and loads its web
 /// chat in the main window. The runner's pairing is per server: on a new one
 /// it says so (Settings → CLI → Connect).
-#[tauri::command]
+#[tauri::command(async)]
 fn set_server(app: AppHandle, webview: Webview, state: State<'_, AppState>, url: String) -> Result<String, String> {
     own_page(&webview)?;
     let server = settings::normalize_server(&url)?;
@@ -453,21 +460,21 @@ fn set_server(app: AppHandle, webview: Webview, state: State<'_, AppState>, url:
     Ok(server)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn choose_folder(app: AppHandle, webview: Webview) -> Result<(), String> {
     own_page(&webview)?;
     choose_workdir(&app);
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_folder(app: AppHandle, webview: Webview) -> Result<(), String> {
     own_page(&webview)?;
     open_workdir(&app);
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_paused(app: AppHandle, webview: Webview, paused: bool) -> Result<(), String> {
     own_page(&webview)?;
     pause_connector(&app, paused);
@@ -593,14 +600,14 @@ pub fn run() {
         .on_window_event(|window, event| {
             // AppKit re-lays out the title bar on these; narrow it again.
             #[cfg(target_os = "macos")]
-            if matches!(event, WindowEvent::Resized(_) | WindowEvent::Focused(_)) {
+            if window.label() == MAIN && matches!(event, WindowEvent::Resized(_) | WindowEvent::Focused(_)) {
                 if let Some(webview_window) = window.app_handle().get_webview_window(window.label()) {
                     titlebar::narrow_to_traffic_lights(&webview_window);
                 }
             }
             // Closing the window keeps the connector running in the menu bar;
             // "Quit VirtuAI" is what stops it.
-            if let WindowEvent::CloseRequested { api, .. } = event {
+            if let (MAIN, WindowEvent::CloseRequested { api, .. }) = (window.label(), event) {
                 let _ = window.hide();
                 api.prevent_close();
             }
