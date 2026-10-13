@@ -1,0 +1,7 @@
+#!/bin/sh
+# Type-checking only: pretend to compile, so build scripts that need Apple's
+# SDK get an object file and `cargo check` can reach the Rust code.
+out=""
+while [ $# -gt 0 ]; do [ "$1" = "-o" ] && { out="$2"; shift; }; shift; done
+[ -n "$out" ] && : > "$out"
+exit 0

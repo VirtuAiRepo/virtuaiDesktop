@@ -1,0 +1,198 @@
+# A tag v* builds, signs and notarizes VirtuAI for macOS (Apple silicon) and
+# builds it for Linux, and publishes both as a GitHub Release of that tag.
+#
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# The app's version comes from the tag. The runner inside is the CLI release
+# pinned in runner/cli-version (from PyPI).
+#
+# Secrets (Settings → Secrets and variables → Actions):
+#   APPLE_CERTIFICATE           base64 of the "Developer ID Application" .p12
+#   APPLE_CERTIFICATE_PASSWORD  the password the .p12 was exported with
+#   APPLE_API_KEY_P8            the App Store Connect team key (.p8 file contents)
+#   APPLE_API_KEY               its Key ID
+#   APPLE_API_ISSUER            its Issuer ID
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build, e.g. v0.2.0"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  macos:
+    runs-on: macos-14  # Apple silicon: the build is arm64
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Version from the tag
+        run: |
+          version="${TAG#v}"
+          jq --arg v "$version" '.version = $v' src-tauri/tauri.conf.json > tmp.json
+          mv tmp.json src-tauri/tauri.conf.json
+
+      # Into a keychain of its own, before anything signs: runner/build.sh signs
+      # the frozen CLI with it, then Tauri signs the app around it.
+      - name: Signing identity
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(uuidgen)"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          identity="$(security find-identity -v -p codesigning "$keychain" \
+            | grep -o '"Developer ID Application: [^"]*"' | head -1 | tr -d '"')"
+          if [ -z "$identity" ]; then
+            echo "No 'Developer ID Application' identity in APPLE_CERTIFICATE" >&2
+            security find-identity -v "$keychain" >&2
+            exit 1
+          fi
+          echo "APPLE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      - name: Notarization key
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          printf '%s' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+          echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+
+      - run: npm ci
+
+      # Freezes and signs the runner, then builds, signs and notarizes the app.
+      - name: Build
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: npm run build
+
+      - name: The frozen runner, end to end
+        run: npm run check:runner
+
+      # Tauri notarizes the app; the disk image around it is signed,
+      # notarized and stapled too, so it opens without a warning offline.
+      - name: Sign and notarize the disk image
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          dmg="$(ls src-tauri/target/release/bundle/dmg/*.dmg)"
+          codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
+          xcrun notarytool submit "$dmg" --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait
+          xcrun stapler staple "$dmg"
+
+      # What Gatekeeper will say on someone else's Mac, and whether Tauri's
+      # signing of the app kept the runner's own entitlements.
+      - name: Verify
+        run: |
+          app="$(ls -d src-tauri/target/release/bundle/macos/*.app)"
+          dmg="$(ls src-tauri/target/release/bundle/dmg/*.dmg)"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          spctl --assess --type execute --verbose=4 "$app"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
+          xcrun stapler validate "$dmg"
+          codesign -d --entitlements - "$app/Contents/Resources/runner/virtuai"
+
+      - name: Rename for download
+        run: |
+          mkdir -p out
+          cp src-tauri/target/release/bundle/dmg/*.dmg "out/VirtuAI-${TAG#v}-macos-arm64.dmg"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: out/*
+
+      - name: Remove the keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+
+  linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev patchelf
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Version from the tag
+        run: |
+          version="${TAG#v}"
+          jq --arg v "$version" '.version = $v' src-tauri/tauri.conf.json > tmp.json
+          mv tmp.json src-tauri/tauri.conf.json
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: The frozen runner, end to end
+        run: npm run check:runner
+
+      - name: Rename for download
+        run: |
+          mkdir -p out
+          cp src-tauri/target/release/bundle/deb/*.deb "out/VirtuAI-${TAG#v}-linux-amd64.deb"
+          cp src-tauri/target/release/bundle/appimage/*.AppImage "out/VirtuAI-${TAG#v}-linux-x86_64.AppImage"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: out/*

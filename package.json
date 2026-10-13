@@ -1,0 +1,16 @@
+{
+  "name": "virtuai-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build:runner": "runner/build.sh",
+    "check:runner": "runner/build/venv/bin/python runner/e2e_check.py runner/dist/virtuai/virtuai",
+    "build": "npm run build:runner && tauri build --config src-tauri/tauri.runner.conf.json",
+    "build:app-only": "tauri build --config src-tauri/tauri.runner.conf.json"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.2"
+  }
+}

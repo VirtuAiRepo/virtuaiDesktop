@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VirtuAI</title>
+  <link rel="stylesheet" href="setup.css">
+</head>
+<body>
+  <!-- macOS overlays the window's traffic lights on the page: this is the bar
+       they sit in, and what the window is dragged by. -->
+  <div class="titlebar" data-tauri-drag-region></div>
+  <main>
+    <h1>VirtuAI</h1>
+    <p class="lead">Which VirtuAI server do you use? It is the address you open in your browser.</p>
+    <form id="setup">
+      <input id="server" type="url" required autofocus
+             placeholder="https://virtuai.example.com" autocomplete="url">
+      <button type="submit">Connect</button>
+    </form>
+    <p id="error" role="alert"></p>
+  </main>
+  <script src="setup.js"></script>
+</body>
+</html>
