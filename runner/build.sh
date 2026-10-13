@@ -35,7 +35,12 @@ EXTRAS="${VIRTUAI_RUNNER_EXTRAS-browser}"
 command -v uv >/dev/null || { echo "uv is required: https://docs.astral.sh/uv/" >&2; exit 1; }
 
 rm -rf "$BUILD" "$DIST"
-uv venv -q --python "$PYTHON" "$BUILD/venv"
+# uv's own Python, never one installed on the machine: GitHub's macOS image has
+# python.org's framework build, which PyInstaller copies as a Python.framework
+# of symlinks. Tauri flattens those when it copies the resources, breaking the
+# framework's signature, and notarization rejects the app. uv's standalone
+# build ships a plain libpython dylib.
+uv venv -q --python-preference only-managed --python "$PYTHON" "$BUILD/venv"
 if [ -n "${VIRTUAI_CLI_SOURCE:-}" ]; then
   SOURCE="$(cd "$VIRTUAI_CLI_SOURCE" && pwd)"
   PKG="$SOURCE"; [ -n "$EXTRAS" ] && PKG="$SOURCE[$EXTRAS]"
