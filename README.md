@@ -8,7 +8,8 @@ running anything its command guard does not clear.
 ```
 VirtuAI.app (Tauri 2)
 ├── window ───────────► https://<your VirtuAI server>/   the server's own web chat
-├── menu bar: status · Open · Pause · Working folder · Change server · Quit
+├── menu bar: status · Open · Pause · Working folder · Settings… · Quit
+├── Settings window: server · working folder · connector   (⌘, on macOS)
 └── child process: virtuai run --desktop                 the VirtuAI CLI, bundled
        ▲  stdin/stdout, one JSON line per message
        └── approval requests → native dialog "Allow / Deny"
@@ -27,6 +28,14 @@ From [Releases](../../releases/latest):
 The app asks for your VirtuAI server's address the first time, then shows its
 sign-in. Agents work in a folder you choose (`~/virtuai` by default); the app
 refuses the disk's root and any folder that holds its own data.
+
+**Settings** (⌘, or VirtuAI → Settings… on macOS, the menu bar icon anywhere,
+or the gear in the chat's title bar) changes the server, the working folder,
+and pauses the connector. A new server needs its own sign-in, and its own
+pairing: Settings → CLI → Connect in the chat.
+
+On macOS, the first time the connector starts it reads its token from the
+keychain, and macOS asks; choose **Always Allow**.
 
 The browser tools drive the **Google Chrome** installed on the computer; without
 it they fail and the rest works.
@@ -119,3 +128,8 @@ every push and pull request.
 
 `src-tauri/icons/` is generated from `src-tauri/icons/app-icon-source.png`
 (`npx tauri icon src-tauri/icons/app-icon-source.png`).
+
+## License
+
+[Apache License 2.0](LICENSE). It covers this code, not the VirtuAI name or
+logo.

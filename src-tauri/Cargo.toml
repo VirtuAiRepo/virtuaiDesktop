@@ -3,6 +3,7 @@ name = "virtuai-desktop"
 version = "0.1.0"
 description = "VirtuAI Desktop: web chat plus the local connector"
 edition = "2021"
+license = "Apache-2.0"
 # Tauri 2.12 and its plugins need 1.90; an older toolchain fails at resolution
 # with "uuid requires rustc 1.89" or similar, which does not say what to do.
 rust-version = "1.90"

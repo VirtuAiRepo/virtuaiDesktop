@@ -16,14 +16,18 @@ use settings::Settings;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::ipc::CapabilityBuilder;
+use serde::Serialize;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent, Wry};
+use tauri::{
+    AppHandle, Emitter, Manager, RunEvent, State, Webview, WebviewUrl, WebviewWindowBuilder, WindowEvent, Wry,
+};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_opener::OpenerExt;
 use url::Url;
 
 const MAIN: &str = "main";
+const SETTINGS: &str = "settings";
 
 /// Lets the web chat know it runs inside the app, on which OS (macOS gets a
 /// title bar drawn by the page, frontend/src/desktop/), and how to ask it to
@@ -39,6 +43,7 @@ window.__VIRTUAI_DESKTOP__ = Object.freeze({{
   pair: (code) => {{ window.location.href = "virtuai://pair?code=" + encodeURIComponent(code); }},
   openWorkdir: () => {{ window.location.href = "virtuai://workdir/open"; }},
   chooseWorkdir: () => {{ window.location.href = "virtuai://workdir/choose"; }},
+  openSettings: () => {{ window.location.href = "virtuai://settings"; }},
 }});
 "#,
         version = env!("CARGO_PKG_VERSION"),
@@ -105,6 +110,8 @@ struct AppState {
     config_dir: PathBuf,
     runner: Runner,
     paused: Mutex<bool>,
+    /// The runner's last state, for the Settings window.
+    connector: Mutex<String>,
     status_item: MenuItem<Wry>,
     pause_item: MenuItem<Wry>,
 }
@@ -125,7 +132,15 @@ fn status_text(state: &str) -> &'static str {
 }
 
 fn set_status(app: &AppHandle, state: &str) {
-    let _ = app.state::<AppState>().status_item.set_text(status_text(state));
+    let app_state = app.state::<AppState>();
+    let _ = app_state.status_item.set_text(status_text(state));
+    *app_state.connector.lock().unwrap() = state.to_string();
+    settings_changed(app);
+}
+
+/// Tells an open Settings window to read the settings again.
+fn settings_changed(app: &AppHandle) {
+    let _ = app.emit_to(SETTINGS, "settings-changed", ());
 }
 
 fn on_runner_event(app: &AppHandle, event: Event) {
@@ -241,6 +256,7 @@ fn choose_workdir(app: &AppHandle) {
                     eprintln!("[app] could not save the working folder: {err}");
                 }
                 start_runner(&handle);
+                settings_changed(&handle);
             }
             Err(why) => {
                 handle
@@ -259,8 +275,11 @@ fn choose_workdir(app: &AppHandle) {
 /// must not be able to point this machine's runner somewhere else.
 /// `virtuai://workdir/open` and `virtuai://workdir/choose` come from the
 /// title bar's folder controls; neither carries a path, the person picks it.
+/// `virtuai://settings` opens the Settings window, which the page cannot
+/// reach into.
 fn handle_desktop_link(app: &AppHandle, url: &Url) {
     match (url.host_str(), url.path()) {
+        (Some("settings"), _) => return open_settings(app),
         (Some("workdir"), "/open") => return open_workdir(app),
         (Some("workdir"), "/choose") => return choose_workdir(app),
         (Some("pair"), _) => {}
@@ -347,20 +366,73 @@ fn build_main_window(app: &AppHandle, url: WebviewUrl) -> tauri::Result<()> {
     Ok(())
 }
 
-fn show_setup(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(MAIN) {
-        let _ = window.destroy();
+/// Settings: the server, the working folder and the connector, in a window of
+/// its own beside the chat. Reached from the app menu (⌘,), the menu bar icon
+/// and the web chat's title bar, so it is there even when the server's page
+/// does not load.
+fn open_settings(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(SETTINGS) {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return;
     }
-    let _ = build_main_window(app, WebviewUrl::App("index.html".into()));
+    let built = WebviewWindowBuilder::new(app, SETTINGS, WebviewUrl::App("settings.html".into()))
+        .title("VirtuAI Settings")
+        .inner_size(560.0, 560.0)
+        .min_inner_size(420.0, 440.0)
+        .build();
+    if let Err(err) = built {
+        eprintln!("[app] could not open Settings: {err}");
+    }
+}
+
+/// The app's commands are for its own pages (setup and Settings), never for
+/// the server's page in the main window, whatever capability its origin holds.
+fn own_page(webview: &Webview) -> Result<(), String> {
+    let url = webview.url().map_err(|e| e.to_string())?;
+    if url.scheme() == "tauri" || url.host_str() == Some("tauri.localhost") {
+        Ok(())
+    } else {
+        Err("Not allowed from this page.".into())
+    }
+}
+
+#[derive(Serialize)]
+struct SettingsView {
+    server: Option<String>,
+    workdir: Option<String>,
+    connector: String,
+    connector_text: &'static str,
+    paused: bool,
+    version: &'static str,
 }
 
 #[tauri::command]
-fn current_server(state: State<'_, AppState>) -> Option<String> {
-    state.settings.lock().unwrap().server_url.clone()
+fn get_settings(app: AppHandle, webview: Webview, state: State<'_, AppState>) -> Result<SettingsView, String> {
+    own_page(&webview)?;
+    let connector = state.connector.lock().unwrap().clone();
+    Ok(SettingsView {
+        server: state.settings.lock().unwrap().server_url.clone(),
+        workdir: current_workdir(&app).map(|d| d.display().to_string()),
+        connector_text: status_text(&connector),
+        connector,
+        paused: *state.paused.lock().unwrap(),
+        version: env!("CARGO_PKG_VERSION"),
+    })
 }
 
 #[tauri::command]
-fn set_server(app: AppHandle, state: State<'_, AppState>, url: String) -> Result<(), String> {
+fn current_server(webview: Webview, state: State<'_, AppState>) -> Result<Option<String>, String> {
+    own_page(&webview)?;
+    Ok(state.settings.lock().unwrap().server_url.clone())
+}
+
+/// Saves the server, restarts the connector against it, and loads its web
+/// chat in the main window. The runner's pairing is per server: on a new one
+/// it says so (Settings → CLI → Connect).
+#[tauri::command]
+fn set_server(app: AppHandle, webview: Webview, state: State<'_, AppState>, url: String) -> Result<String, String> {
+    own_page(&webview)?;
     let server = settings::normalize_server(&url)?;
     {
         let mut settings = state.settings.lock().unwrap();
@@ -369,10 +441,51 @@ fn set_server(app: AppHandle, state: State<'_, AppState>, url: String) -> Result
     }
     allow_title_bar_dragging(&app, &server);
     start_runner(&app);
-    let window = app.get_webview_window(MAIN).ok_or("No window.")?;
-    window
-        .navigate(Url::parse(&server).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())
+    settings_changed(&app);
+    let target = Url::parse(&server).map_err(|e| e.to_string())?;
+    match app.get_webview_window(MAIN) {
+        Some(window) => {
+            window.navigate(target).map_err(|e| e.to_string())?;
+            let _ = window.show();
+        }
+        None => open_main_window(&app).map_err(|e| e.to_string())?,
+    }
+    Ok(server)
+}
+
+#[tauri::command]
+fn choose_folder(app: AppHandle, webview: Webview) -> Result<(), String> {
+    own_page(&webview)?;
+    choose_workdir(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn open_folder(app: AppHandle, webview: Webview) -> Result<(), String> {
+    own_page(&webview)?;
+    open_workdir(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_paused(app: AppHandle, webview: Webview, paused: bool) -> Result<(), String> {
+    own_page(&webview)?;
+    pause_connector(&app, paused);
+    Ok(())
+}
+
+fn pause_connector(app: &AppHandle, paused: bool) {
+    let state = app.state::<AppState>();
+    *state.paused.lock().unwrap() = paused;
+    if paused {
+        state.runner.stop();
+        let _ = state.pause_item.set_text("Resume connector");
+        set_status(app, "paused");
+    } else {
+        let _ = state.pause_item.set_text("Pause connector");
+        start_runner(app);
+        settings_changed(app);
+    }
 }
 
 fn on_menu(app: &AppHandle, id: &str) {
@@ -382,23 +495,12 @@ fn on_menu(app: &AppHandle, id: &str) {
             let _ = open_main_window(app);
         }
         "pause" => {
-            let paused = {
-                let mut paused = state.paused.lock().unwrap();
-                *paused = !*paused;
-                *paused
-            };
-            if paused {
-                state.runner.stop();
-                set_status(app, "paused");
-                let _ = state.pause_item.set_text("Resume connector");
-            } else {
-                let _ = state.pause_item.set_text("Pause connector");
-                start_runner(app);
-            }
+            let paused = !*state.paused.lock().unwrap();
+            pause_connector(app, paused);
         }
         "workdir" => open_workdir(app),
         "choose_workdir" => choose_workdir(app),
-        "server" => show_setup(app),
+        "settings" => open_settings(app),
         "quit" => {
             state.runner.stop();
             app.exit(0);
@@ -407,11 +509,33 @@ fn on_menu(app: &AppHandle, id: &str) {
     }
 }
 
+/// macOS's standard menu (Edit gives the chat copy and paste) with Settings…
+/// under the app's name, at ⌘, as on every Mac app. The tray's handler
+/// (`on_menu`) receives its events too.
+#[cfg(target_os = "macos")]
+fn app_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
+    let menu = Menu::default(app)?;
+    if let Some(app_submenu) = menu.items()?.first().and_then(|item| item.as_submenu().cloned()) {
+        let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
+        // After "About VirtuAI" and its separator.
+        app_submenu.insert(&settings, 2)?;
+        app_submenu.insert(&PredefinedMenuItem::separator(app)?, 3)?;
+    }
+    Ok(menu)
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![current_server, set_server])
+        .invoke_handler(tauri::generate_handler![
+            get_settings,
+            current_server,
+            set_server,
+            choose_folder,
+            open_folder,
+            set_paused
+        ])
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
             if let Ok(resources) = app.path().resource_dir() {
@@ -430,7 +554,7 @@ pub fn run() {
                     &pause_item,
                     &MenuItem::with_id(app, "workdir", "Open working folder", true, None::<&str>)?,
                     &MenuItem::with_id(app, "choose_workdir", "Choose working folder…", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "server", "Change server…", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?,
                     &PredefinedMenuItem::separator(app)?,
                     &MenuItem::with_id(app, "quit", "Quit VirtuAI", true, None::<&str>)?,
                 ],
@@ -444,6 +568,8 @@ pub fn run() {
                 tray = tray.icon(icon.clone());
             }
             tray.build(app)?;
+            #[cfg(target_os = "macos")]
+            app.set_menu(app_menu(app.handle())?)?;
 
             let handle = app.handle().clone();
             let runner = Runner::new(Arc::new(move |event| on_runner_event(&handle, event)));
@@ -452,6 +578,7 @@ pub fn run() {
                 config_dir,
                 runner,
                 paused: Mutex::new(false),
+                connector: Mutex::new("off".into()),
                 status_item,
                 pause_item,
             });

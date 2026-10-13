@@ -1,9 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The bundled setup page: core, plus dragging the window by its title bar. The server's page gets only the dragging, at runtime and for its origin alone (allow_title_bar_dragging in lib.rs).",
+  "description": "The app's own pages, the first-run setup and Settings: core, plus dragging the window by its title bar. The server's page gets only the dragging, at runtime and for its origin alone (allow_title_bar_dragging in lib.rs), and the app's commands refuse it (own_page).",
   "windows": [
-    "main"
+    "main",
+    "settings"
   ],
   "permissions": [
     "core:default",

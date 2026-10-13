@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VirtuAI Settings</title>
+  <link rel="stylesheet" href="setup.css">
+</head>
+<body class="settings">
+  <main>
+    <section>
+      <h2>Server</h2>
+      <p class="hint">The VirtuAI address you open in your browser.</p>
+      <form id="server-form">
+        <input id="server" type="url" required placeholder="https://virtuai.example.com" autocomplete="url">
+        <button type="submit">Save</button>
+      </form>
+      <p id="server-note" class="note" role="status"></p>
+    </section>
+
+    <section>
+      <h2>Working folder</h2>
+      <p class="hint">The only folder your agents can work in on this computer.</p>
+      <div class="row">
+        <code id="workdir">…</code>
+        <button type="button" class="secondary" id="open-folder">Open</button>
+        <button type="button" class="secondary" id="choose-folder">Change…</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Connector</h2>
+      <p class="hint">Lets your agents run commands here. To connect it to your account,
+        open Settings → CLI → Connect in the chat.</p>
+      <div class="row">
+        <span id="connector" class="status">…</span>
+        <button type="button" class="secondary" id="pause">Pause</button>
+      </div>
+    </section>
+
+    <p class="version">VirtuAI Desktop <span id="version"></span></p>
+  </main>
+  <script src="settings.js"></script>
+</body>
+</html>

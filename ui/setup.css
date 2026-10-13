@@ -32,3 +32,32 @@ button {
 button:disabled { opacity: .6; cursor: default; }
 #error { min-height: 1.5em; margin: 12px 0 0; color: var(--danger); font-size: 13px; }
 .titlebar { position: fixed; top: 0; left: 0; right: 0; height: 40px; }
+
+/* Settings */
+body.settings { display: block; min-height: 0; }
+body.settings main {
+  width: auto; max-width: 560px; margin: 0 auto; padding: 24px;
+  background: none; border: 0; border-radius: 0;
+}
+section { padding: 0 0 20px; margin: 0 0 20px; border-bottom: 1px solid var(--border); }
+h2 { margin: 0 0 4px; font-size: 15px; }
+.hint { margin: 0 0 12px; color: var(--fg-subtle); font-size: 13px; }
+.row { display: flex; align-items: center; gap: 8px; }
+.row code, .row .status {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+button.secondary {
+  color: var(--fg); background: var(--surface); border: 1px solid var(--border); font-weight: 500;
+  padding: 8px 12px;
+}
+.status::before {
+  content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 8px;
+  border-radius: 50%; background: var(--fg-subtle);
+}
+.status[data-state="connected"]::before { background: #16a34a; }
+.status[data-state="error"]::before, .status[data-state="rejected"]::before,
+.status[data-state="not_paired"]::before, .status[data-state="missing_cli"]::before { background: var(--danger); }
+.note { min-height: 1.5em; margin: 8px 0 0; color: var(--fg-subtle); font-size: 13px; }
+.note.error { color: var(--danger); }
+.version { margin: 0; color: var(--fg-subtle); font-size: 12px; }
