@@ -13,7 +13,9 @@ trap 'rm -rf "$TMP_HOME"' EXIT
 # Captured, not piped into `grep -q`: grep stops reading at the first match,
 # the CLI dies of SIGPIPE writing the rest, and pipefail turns that into a
 # silent failure — which is what happened on macOS, whose pipe buffer is small.
-help="$(COLUMNS=200 "$CLI" run --help)"
+# Plain text: under GitHub Actions rich colours the help even into a pipe and
+# splits "--desktop" with escape codes.
+help="$(NO_COLOR=1 TERM=dumb COLUMNS=200 "$CLI" run --help)"
 grep -q -- "--desktop" <<<"$help" || { echo "smoke: 'run --help' has no --desktop" >&2; exit 1; }
 
 # Unpaired, the runner exits 1 on purpose; `|| code=$?` keeps that from
