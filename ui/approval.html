@@ -6,11 +6,11 @@
   <title>Allow this command?</title>
   <link rel="stylesheet" href="setup.css">
   <style>
-    body.approval { display: block; min-height: 0; }
+    body.approval { display: block; min-height: 0; overflow-y: auto; }
     body.approval main { max-width: none; margin: 0; padding: 20px 22px; }
     h1 { margin: 0 0 4px; font-size: 16px; }
     pre {
-      margin: 12px 0; padding: 10px 12px; max-height: 120px; overflow: auto;
+      margin: 12px 0; padding: 10px 12px; max-height: 40vh; overflow: auto;
       white-space: pre-wrap; word-break: break-all;
       border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
       font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -35,7 +35,7 @@
       <button type="button" class="secondary" data-scope="folder">Always allow <code class="base"></code> in this folder</button>
       <button type="button" class="secondary deny" data-deny>Deny</button>
     </div>
-    <p class="covers">A grant covers <code class="base"></code> in this folder only. What deletes, reads secrets
+    <p class="covers" id="covers">A grant covers <code class="base"></code> in this folder only. What deletes, reads secrets
       or leaves the folder is asked every time.</p>
     <p id="note" class="note" role="status"></p>
   </main>

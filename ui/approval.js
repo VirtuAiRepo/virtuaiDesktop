@@ -14,6 +14,8 @@ async function load() {
     $('why').textContent = view.reason ? `Why you are asked: ${view.reason}` : '';
     $('folder').textContent = view.workdir;
     for (const el of document.querySelectorAll('.base')) el.textContent = view.base;
+    // No base: asked every time, so nothing to grant beyond this once.
+    if (!view.base) $('covers').hidden = true;
     for (const button of buttons) {
       const scope = button.dataset.scope;
       if (scope && scope !== 'once' && !view.scopes.includes(scope)) button.hidden = true;
