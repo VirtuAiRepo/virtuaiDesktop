@@ -179,13 +179,16 @@ fn on_runner_event(app: &AppHandle, event: Event) {
             workdir,
             base,
             scopes,
-        } => match base {
-            // A yes can stand (CLI 1.0.21 grants): a window with the scopes.
-            Some(base) if !scopes.is_empty() => {
-                ask_approval_window(app, ApprovalView { id, command, reason, workdir, base, scopes })
-            }
-            _ => ask_approval(app, id, command, reason, workdir),
-        },
+        } => {
+            // Every question gets the window: a native dialog grows with the
+            // command until its buttons leave the screen. Without a base (or
+            // from a CLI before 1.0.21 grants) it offers once and deny only.
+            let (base, scopes) = match base {
+                Some(base) if !scopes.is_empty() => (base, scopes),
+                _ => (String::new(), Vec::new()),
+            };
+            ask_approval_window(app, ApprovalView { id, command, reason, workdir, base, scopes })
+        }
         // The dialog cannot be taken back; an answer after this is ignored
         // by the runner, and the agent was already told nobody answered. A
         // window can: it closes.
@@ -199,8 +202,11 @@ fn on_runner_event(app: &AppHandle, event: Event) {
     }
 }
 
+/// The last resort when the window cannot open. A long command is cut so the
+/// buttons stay on screen; what is cut is said, and Deny is the safe answer.
 fn ask_approval(app: &AppHandle, id: String, command: String, reason: String, workdir: String) {
     let runner = app.state::<AppState>().runner.clone();
+    let command = clip_command(&command);
     let text = format!(
         "An agent wants to run this on your computer:\n\n{command}\n\nWhy you are asked: {reason}\nFolder: {workdir}"
     );
@@ -210,6 +216,22 @@ fn ask_approval(app: &AppHandle, id: String, command: String, reason: String, wo
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom("Allow".into(), "Deny".into()))
         .show(move |allowed| runner.answer(&id, allowed, None));
+}
+
+const CLIP_LINES: usize = 15;
+const CLIP_CHARS: usize = 1200;
+
+fn clip_command(command: &str) -> String {
+    let command = command.trim_end();
+    let mut shown: String = command.lines().take(CLIP_LINES).collect::<Vec<_>>().join("\n");
+    if shown.chars().count() > CLIP_CHARS {
+        shown = shown.chars().take(CLIP_CHARS).collect();
+    }
+    let hidden = command.chars().count().saturating_sub(shown.chars().count());
+    if hidden > 0 {
+        shown.push_str(&format!("\n… ({hidden} more characters not shown)"));
+    }
+    shown
 }
 
 /// A question a yes can stand for: once, this conversation, an hour, or
@@ -223,7 +245,7 @@ fn ask_approval_window(app: &AppHandle, view: ApprovalView) {
     app.state::<AppState>().approvals.lock().unwrap().insert(id.clone(), view);
     let built = WebviewWindowBuilder::new(app, format!("{APPROVAL}{id}"), WebviewUrl::App(format!("approval.html?id={id}").into()))
         .title("VirtuAI — allow this command?")
-        .inner_size(560.0, 440.0)
+        .inner_size(600.0, 560.0)
         .min_inner_size(460.0, 380.0)
         .always_on_top(true)
         .focused(true)
@@ -735,4 +757,23 @@ pub fn run() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod clip_tests {
+    use super::clip_command;
+
+    #[test]
+    fn a_short_command_is_shown_whole() {
+        assert_eq!(clip_command("ls -la\n"), "ls -la");
+    }
+
+    #[test]
+    fn a_long_one_is_cut_and_says_so() {
+        let script: String = (0..100).map(|i| format!("echo {i}\n")).collect();
+        let shown = clip_command(&script);
+        assert_eq!(shown.lines().count(), 16);
+        assert!(shown.ends_with("more characters not shown)"));
+        assert!(clip_command(&"x".repeat(5000)).contains("3800 more characters"));
+    }
 }
