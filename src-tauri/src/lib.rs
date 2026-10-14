@@ -527,7 +527,7 @@ fn answer_approval(
     let Some(view) = view else {
         return Err("This request is no longer waiting.".into());
     };
-    let scope = if approved && view.scopes.iter().any(|s| *s == scope) { scope } else { "once".into() };
+    let scope = if approved && view.scopes.contains(&scope) { scope } else { "once".into() };
     state.runner.answer(&id, approved, Some(&scope));
     if let Some(window) = app.get_webview_window(&format!("{APPROVAL}{id}")) {
         let _ = window.destroy();
