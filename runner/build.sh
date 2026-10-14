@@ -49,7 +49,10 @@ else
   PKG="virtuai-cli==$VERSION"; [ -n "$EXTRAS" ] && PKG="virtuai-cli[$EXTRAS]==$VERSION"
 fi
 echo "build.sh: freezing $PKG" >&2
-VIRTUAL_ENV="$BUILD/venv" uv pip install -q "$PKG" "pyinstaller==6.22.3"
+# --refresh-package: the CI restores uv's cache from an earlier run, whose copy
+# of PyPI's index for virtuai-cli predates a version published minutes ago —
+# 0.2.8 and 0.2.9 each failed once with "no version of virtuai-cli==…".
+VIRTUAL_ENV="$BUILD/venv" uv pip install -q --refresh-package virtuai-cli "$PKG" "pyinstaller==6.22.3"
 
 args=(
   --noconfirm --clean --onedir --console --name virtuai
