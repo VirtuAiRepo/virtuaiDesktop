@@ -36,6 +36,13 @@ pub enum Event {
         reason: String,
         #[serde(default)]
         workdir: String,
+        /// What a standing grant would cover ("npm install"), from a CLI with
+        /// grants (1.0.21); absent for what is asked every time.
+        #[serde(default)]
+        base: Option<String>,
+        /// The scopes the runner accepts: once, conversation, timed, folder.
+        #[serde(default)]
+        scopes: Vec<String>,
     },
     ApprovalExpired {
         id: String,
@@ -100,8 +107,13 @@ impl Runner {
         inner.generation
     }
 
-    pub fn answer(&self, id: &str, approved: bool) {
-        let line = serde_json::json!({"type": "approval_response", "id": id, "approved": approved});
+    /// The person's answer; `scope` is how long a yes stands (a CLI before
+    /// grants ignores it and takes it as once).
+    pub fn answer(&self, id: &str, approved: bool, scope: Option<&str>) {
+        let mut line = serde_json::json!({"type": "approval_response", "id": id, "approved": approved});
+        if let Some(scope) = scope {
+            line["scope"] = serde_json::json!(scope);
+        }
         let mut inner = self.inner.lock().unwrap();
         if let Some(stdin) = inner.stdin.as_mut() {
             let _ = writeln!(stdin, "{line}").and_then(|_| stdin.flush());
@@ -293,6 +305,19 @@ mod tests {
                 command: "rm -rf build".into(),
                 reason: "no classifier".into(),
                 workdir: "/w".into(),
+                base: None,
+                scopes: vec![],
+            })
+        );
+        assert_eq!(
+            parse_line(r#"@@virtuai {"type": "approval_request", "id": "a2", "command": "npm install", "base": "npm install", "scopes": ["once", "conversation", "timed", "folder"]}"#),
+            Some(Event::ApprovalRequest {
+                id: "a2".into(),
+                command: "npm install".into(),
+                reason: String::new(),
+                workdir: String::new(),
+                base: Some("npm install".into()),
+                scopes: vec!["once".into(), "conversation".into(), "timed".into(), "folder".into()],
             })
         );
         assert_eq!(

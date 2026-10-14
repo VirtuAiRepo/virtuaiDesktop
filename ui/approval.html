@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Allow this command?</title>
+  <link rel="stylesheet" href="setup.css">
+  <style>
+    body.approval { display: block; min-height: 0; }
+    body.approval main { max-width: none; margin: 0; padding: 20px 22px; }
+    h1 { margin: 0 0 4px; font-size: 16px; }
+    pre {
+      margin: 12px 0; padding: 10px 12px; max-height: 120px; overflow: auto;
+      white-space: pre-wrap; word-break: break-all;
+      border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
+      font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .why { margin: 0 0 4px; color: var(--fg-subtle); font-size: 13px; }
+    .choices { display: grid; gap: 8px; margin-top: 16px; }
+    .choices button { width: 100%; text-align: left; }
+    .choices .deny { color: var(--danger); }
+    .covers { margin: 12px 0 0; color: var(--fg-subtle); font-size: 12px; }
+  </style>
+</head>
+<body class="approval">
+  <main>
+    <h1>An agent wants to run this on your computer</h1>
+    <pre id="command">…</pre>
+    <p class="why" id="why"></p>
+    <p class="why">Folder: <code id="folder"></code></p>
+    <div class="choices" role="group" aria-label="Your answer">
+      <button type="button" data-scope="once">Allow once</button>
+      <button type="button" class="secondary" data-scope="conversation">Allow <code class="base"></code> in this conversation</button>
+      <button type="button" class="secondary" data-scope="timed">Allow <code class="base"></code> for 1 hour</button>
+      <button type="button" class="secondary" data-scope="folder">Always allow <code class="base"></code> in this folder</button>
+      <button type="button" class="secondary deny" data-deny>Deny</button>
+    </div>
+    <p class="covers">A grant covers <code class="base"></code> in this folder only. What deletes, reads secrets
+      or leaves the folder is asked every time.</p>
+    <p id="note" class="note" role="status"></p>
+  </main>
+  <script src="approval.js"></script>
+</body>
+</html>
