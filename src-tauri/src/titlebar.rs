@@ -10,8 +10,14 @@
 //!
 //! AppKit lays the container out again on resize and on entering or leaving
 //! full screen, so this runs after each of those too.
+//!
+//! The container is found by its class, never by counting superviews: on a
+//! macOS whose title bar has another layer, two levels up from the close
+//! button was the window's frame view, and narrowing that left a white
+//! window with only the traffic lights (2026-10-14). A view holding the page
+//! is never touched.
 
-use objc2_app_kit::{NSAutoresizingMaskOptions, NSWindow, NSWindowButton};
+use objc2_app_kit::{NSAutoresizingMaskOptions, NSView, NSWindow, NSWindowButton};
 use tauri::{Runtime, WebviewWindow};
 
 /// Room to the right of the zoom button, so its hover ring is not clipped.
@@ -29,9 +35,14 @@ pub fn narrow_to_traffic_lights<R: Runtime>(window: &WebviewWindow<R>) {
         ) else {
             return;
         };
-        let Some(container) = close.superview().and_then(|view| view.superview()) else {
+        let Some(container) = titlebar_container(&close) else {
             return;
         };
+        if let Some(content) = ns_window.contentView() {
+            if content.isDescendantOf(&container) {
+                return;
+            }
+        }
         let zoom_frame = zoom.frame();
         let mut frame = container.frame();
         frame.size.width = zoom_frame.origin.x + zoom_frame.size.width + MARGIN;
@@ -39,4 +50,19 @@ pub fn narrow_to_traffic_lights<R: Runtime>(window: &WebviewWindow<R>) {
         container.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinYMargin);
         container.setFrame(frame);
     });
+}
+
+/// The close button's nearest `NSTitlebarContainerView`, if it has one.
+///
+/// # Safety
+/// On the main thread, like any AppKit view.
+unsafe fn titlebar_container(button: &NSView) -> Option<objc2::rc::Retained<NSView>> {
+    let mut view = unsafe { button.superview() };
+    while let Some(current) = view {
+        if current.class().name().to_bytes() == b"NSTitlebarContainerView" {
+            return Some(current);
+        }
+        view = unsafe { current.superview() };
+    }
+    None
 }
