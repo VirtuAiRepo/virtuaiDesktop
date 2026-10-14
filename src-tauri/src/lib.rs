@@ -13,6 +13,7 @@ mod titlebar;
 
 use runner::{Event, Runner};
 use settings::Settings;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::ipc::CapabilityBuilder;
@@ -28,6 +29,8 @@ use url::Url;
 
 const MAIN: &str = "main";
 const SETTINGS: &str = "settings";
+/// A command waiting for the person, one window each: `approval-<id>`.
+const APPROVAL: &str = "approval-";
 
 /// Lets the web chat know it runs inside the app, on which OS (macOS gets a
 /// title bar drawn by the page, frontend/src/desktop/), and how to ask it to
@@ -114,6 +117,19 @@ struct AppState {
     connector: Mutex<String>,
     status_item: MenuItem<Wry>,
     pause_item: MenuItem<Wry>,
+    /// Questions waiting in an approval window, by request id.
+    approvals: Mutex<HashMap<String, ApprovalView>>,
+}
+
+/// What the approval window shows (ui/approval.html).
+#[derive(Serialize, Clone)]
+struct ApprovalView {
+    id: String,
+    command: String,
+    reason: String,
+    workdir: String,
+    base: String,
+    scopes: Vec<String>,
 }
 
 fn status_text(state: &str) -> &'static str {
@@ -161,10 +177,25 @@ fn on_runner_event(app: &AppHandle, event: Event) {
             command,
             reason,
             workdir,
-        } => ask_approval(app, id, command, reason, workdir),
+            base,
+            scopes,
+        } => match base {
+            // A yes can stand (CLI 1.0.21 grants): a window with the scopes.
+            Some(base) if !scopes.is_empty() => {
+                ask_approval_window(app, ApprovalView { id, command, reason, workdir, base, scopes })
+            }
+            _ => ask_approval(app, id, command, reason, workdir),
+        },
         // The dialog cannot be taken back; an answer after this is ignored
-        // by the runner, and the agent was already told nobody answered.
-        Event::ApprovalExpired { id } => eprintln!("[runner] approval {id} expired"),
+        // by the runner, and the agent was already told nobody answered. A
+        // window can: it closes.
+        Event::ApprovalExpired { id } => {
+            eprintln!("[runner] approval {id} expired");
+            app.state::<AppState>().approvals.lock().unwrap().remove(&id);
+            if let Some(window) = app.get_webview_window(&format!("{APPROVAL}{id}")) {
+                let _ = window.destroy();
+            }
+        }
     }
 }
 
@@ -178,7 +209,47 @@ fn ask_approval(app: &AppHandle, id: String, command: String, reason: String, wo
         .title("VirtuAI — allow this command?")
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom("Allow".into(), "Deny".into()))
-        .show(move |allowed| runner.answer(&id, allowed));
+        .show(move |allowed| runner.answer(&id, allowed, None));
+}
+
+/// A question a yes can stand for: once, this conversation, an hour, or
+/// always in this folder — more than a native dialog's two buttons hold.
+/// Closing the window is a no.
+fn ask_approval_window(app: &AppHandle, view: ApprovalView) {
+    let id = view.id.clone();
+    if !id.chars().all(|c| c.is_ascii_alphanumeric()) || id.is_empty() || id.len() > 64 {
+        return app.state::<AppState>().runner.answer(&id, false, None);
+    }
+    app.state::<AppState>().approvals.lock().unwrap().insert(id.clone(), view);
+    let built = WebviewWindowBuilder::new(app, format!("{APPROVAL}{id}"), WebviewUrl::App(format!("approval.html?id={id}").into()))
+        .title("VirtuAI — allow this command?")
+        .inner_size(560.0, 440.0)
+        .min_inner_size(460.0, 380.0)
+        .always_on_top(true)
+        .focused(true)
+        .center()
+        .build();
+    match built {
+        Ok(window) => {
+            let handle = app.clone();
+            window.on_window_event(move |event| {
+                if let WindowEvent::Destroyed = event {
+                    // Closed without an answer: not a yes.
+                    let pending = handle.state::<AppState>().approvals.lock().unwrap().remove(&id);
+                    if pending.is_some() {
+                        handle.state::<AppState>().runner.answer(&id, false, None);
+                    }
+                }
+            });
+        }
+        Err(err) => {
+            eprintln!("[app] could not open the approval window: {err}");
+            let view = app.state::<AppState>().approvals.lock().unwrap().remove(&id);
+            if let Some(view) = view {
+                ask_approval(app, view.id, view.command, view.reason, view.workdir);
+            }
+        }
+    }
 }
 
 /// What the agents must never reach: the app's own data and the app itself.
@@ -429,6 +500,42 @@ fn get_settings(app: AppHandle, webview: Webview, state: State<'_, AppState>) ->
 }
 
 #[tauri::command(async)]
+fn approval_details(webview: Webview, state: State<'_, AppState>, id: String) -> Result<ApprovalView, String> {
+    own_page(&webview)?;
+    state
+        .approvals
+        .lock()
+        .unwrap()
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| "This request is no longer waiting.".into())
+}
+
+/// The person's answer from the approval window. A scope the runner did
+/// not offer is taken as once; a no is always once.
+#[tauri::command(async)]
+fn answer_approval(
+    app: AppHandle,
+    webview: Webview,
+    state: State<'_, AppState>,
+    id: String,
+    approved: bool,
+    scope: String,
+) -> Result<(), String> {
+    own_page(&webview)?;
+    let view = state.approvals.lock().unwrap().remove(&id);
+    let Some(view) = view else {
+        return Err("This request is no longer waiting.".into());
+    };
+    let scope = if approved && view.scopes.iter().any(|s| *s == scope) { scope } else { "once".into() };
+    state.runner.answer(&id, approved, Some(&scope));
+    if let Some(window) = app.get_webview_window(&format!("{APPROVAL}{id}")) {
+        let _ = window.destroy();
+    }
+    Ok(())
+}
+
+#[tauri::command(async)]
 fn current_server(webview: Webview, state: State<'_, AppState>) -> Result<Option<String>, String> {
     own_page(&webview)?;
     Ok(state.settings.lock().unwrap().server_url.clone())
@@ -541,7 +648,9 @@ pub fn run() {
             set_server,
             choose_folder,
             open_folder,
-            set_paused
+            set_paused,
+            approval_details,
+            answer_approval
         ])
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
@@ -588,6 +697,7 @@ pub fn run() {
                 connector: Mutex::new("off".into()),
                 status_item,
                 pause_item,
+                approvals: Mutex::new(HashMap::new()),
             });
 
             if let Some(server) = app.state::<AppState>().settings.lock().unwrap().server_url.clone() {
