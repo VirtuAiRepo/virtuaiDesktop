@@ -429,6 +429,13 @@ fn open_main_window(app: &AppHandle) -> tauri::Result<()> {
     build_main_window(app, url)
 }
 
+/// What a new-tab request hands to the system browser: web pages, mail and
+/// phone links. A `blob:` or `data:` URL (a file the page made) has no meaning
+/// outside the page and keeps the default.
+fn opens_in_browser(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https" | "mailto" | "tel")
+}
+
 fn build_main_window(app: &AppHandle, url: WebviewUrl) -> tauri::Result<()> {
     let handle = app.clone();
     let builder = WebviewWindowBuilder::new(app, MAIN, url)
@@ -442,6 +449,22 @@ fn build_main_window(app: &AppHandle, url: WebviewUrl) -> tauri::Result<()> {
                 return false;
             }
             true
+        })
+        // A link the page opens in a new tab (the web chat opens every link
+        // in a reply that way) goes to the person's browser. Without this the
+        // webview loaded it over the chat, with no way back. Navigation in the
+        // window itself is left alone: sign-in redirects must stay in it.
+        .on_new_window({
+            let handle = app.clone();
+            move |url, _features| {
+                if opens_in_browser(&url) {
+                    if let Err(err) = handle.opener().open_url(url.as_str(), None::<&str>) {
+                        eprintln!("[app] could not open {url} in the browser: {err}");
+                    }
+                    return tauri::webview::NewWindowResponse::Deny;
+                }
+                tauri::webview::NewWindowResponse::Allow
+            }
         });
     // The page draws the bar in its own theme (light or dark) with back,
     // forward and the sidebar button; macOS keeps only the traffic lights,
@@ -775,5 +798,25 @@ mod clip_tests {
         assert_eq!(shown.lines().count(), 16);
         assert!(shown.ends_with("more characters not shown)"));
         assert!(clip_command(&"x".repeat(5000)).contains("3800 more characters"));
+    }
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::opens_in_browser;
+    use url::Url;
+
+    #[test]
+    fn web_mail_and_phone_links_go_to_the_browser() {
+        for link in ["https://github.com/a/b", "http://example.com", "mailto:a@b.co", "tel:+50212345678"] {
+            assert!(opens_in_browser(&Url::parse(link).unwrap()), "{link}");
+        }
+    }
+
+    #[test]
+    fn what_the_page_made_stays_in_it() {
+        for link in ["blob:https://app.imvirtuai.com/1234", "data:text/plain,hi", "virtuai://settings", "about:blank"] {
+            assert!(!opens_in_browser(&Url::parse(link).unwrap()), "{link}");
+        }
     }
 }
