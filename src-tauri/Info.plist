@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Merged into the app's Info.plist by Tauri. Without it WebKit never
+       offers the page a microphone: voice notes said "not supported". -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>VirtuAI uses the microphone to record the voice messages you send to an agent.</string>
+</dict>
+</plist>

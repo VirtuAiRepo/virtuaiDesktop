@@ -129,6 +129,10 @@ jobs:
           spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
           xcrun stapler validate "$dmg"
           codesign -d --entitlements - "$app/Contents/Resources/runner/virtuai"
+          # The microphone, for voice notes: the hardened runtime blocks it
+          # without this entitlement and the usage string.
+          codesign -d --entitlements - "$app" 2>&1 | grep -q com.apple.security.device.audio-input
+          /usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription" "$app/Contents/Info.plist"
 
       - name: Rename for download
         run: |
