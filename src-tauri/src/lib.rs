@@ -725,6 +725,19 @@ pub fn run() {
                 .show_menu_on_left_click(true)
                 .tooltip("VirtuAI")
                 .on_menu_event(|app, event| on_menu(app, event.id.as_ref()));
+            // The menu bar wants a template image: one colour plus alpha, which
+            // macOS tints for a light or dark bar and dims while the app is not
+            // active. The app icon cannot do either — it sat up there as a
+            // full-colour tile that ignored the theme.
+            #[cfg(target_os = "macos")]
+            {
+                tray = tray
+                    .icon(tauri::image::Image::from_bytes(include_bytes!(
+                        "../icons/tray-template@2x.png"
+                    ))?)
+                    .icon_as_template(true);
+            }
+            #[cfg(not(target_os = "macos"))]
             if let Some(icon) = app.default_window_icon() {
                 tray = tray.icon(icon.clone());
             }
