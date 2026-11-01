@@ -20,7 +20,6 @@ async function refresh() {
   paused = s.paused;
   $('pause').textContent = paused ? 'Resume' : 'Pause';
   $('version').textContent = s.version;
-  $('native-shell').checked = s.native_shell;
 }
 
 form.addEventListener('submit', async (event) => {
@@ -44,23 +43,6 @@ form.addEventListener('submit', async (event) => {
 $('open-folder').addEventListener('click', () => invoke('open_folder'));
 $('choose-folder').addEventListener('click', () => invoke('choose_folder'));
 $('pause').addEventListener('click', () => invoke('set_paused', { paused: !paused }));
-
-$('native-shell').addEventListener('change', async () => {
-  const box = $('native-shell');
-  const nativeNote = $('native-note');
-  box.disabled = true;
-  nativeNote.className = 'note';
-  nativeNote.textContent = '';
-  try {
-    await invoke('set_native_shell', { enabled: box.checked });
-  } catch (e) {
-    box.checked = !box.checked;
-    nativeNote.className = 'note error';
-    nativeNote.textContent = String(e);
-  } finally {
-    box.disabled = false;
-  }
-});
 
 listen('settings-changed', refresh);
 refresh();

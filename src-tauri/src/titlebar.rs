@@ -18,12 +18,12 @@
 //! is never touched.
 
 use objc2_app_kit::{NSAutoresizingMaskOptions, NSView, NSWindow, NSWindowButton};
-use tauri::{Runtime, Window};
+use tauri::{Runtime, WebviewWindow};
 
 /// Room to the right of the zoom button, so its hover ring is not clipped.
 const MARGIN: f64 = 12.0;
 
-pub fn narrow_to_traffic_lights<R: Runtime>(window: &Window<R>) {
+pub fn narrow_to_traffic_lights<R: Runtime>(window: &WebviewWindow<R>) {
     let Ok(ptr) = window.ns_window() else { return };
     let ptr = ptr as usize;
     // AppKit views are main-thread only; window events can arrive elsewhere.
