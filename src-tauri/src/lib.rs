@@ -6,6 +6,7 @@
 //! gets no IPC. The only bridge from the page to the app is navigating to a
 //! `virtuai://` link, which `on_navigation` intercepts.
 
+mod host;
 mod runner;
 mod settings;
 #[cfg(target_os = "macos")]
@@ -317,7 +318,14 @@ fn start_runner(app: &AppHandle) {
     }
     let server = state.settings.lock().unwrap().server_url.clone();
     match (server, current_workdir(app)) {
-        (Some(server), Some(workdir)) => state.runner.start(server, workdir),
+        (Some(server), Some(workdir)) => {
+            // The explorer's watch lives in this process, on the folder the
+            // runner is about to use. A failure here does not stop the runner.
+            if let Err(err) = host::watch(&workdir, ".") {
+                eprintln!("[app] workspace watch: {err}");
+            }
+            state.runner.start(server, workdir)
+        }
         (Some(_), None) => set_status(app, "error"),
         (None, _) => set_status(app, "off"),
     }
