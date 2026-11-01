@@ -61,3 +61,28 @@ button.secondary {
 .note { min-height: 1.5em; margin: 8px 0 0; color: var(--fg-subtle); font-size: 13px; }
 .note.error { color: var(--danger); }
 .version { margin: 0; color: var(--fg-subtle); font-size: 12px; }
+label.check { display: flex; align-items: center; gap: 8px; }
+label.check input { width: auto; flex: none; }
+body.shell {
+  display: flex; flex-direction: column; height: 100vh; min-height: 0;
+  padding-top: 40px; background: var(--bg);
+}
+body.shell header {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 12px 0;
+}
+body.shell h2 { font-size: 13px; margin: 0; }
+body.shell header .hint { margin: 0; }
+body.shell #tree { flex: 1; min-height: 0; overflow: auto; }
+body.shell ul { list-style: none; margin: 0; padding: 0 0 0 12px; }
+body.shell button.entry {
+  display: block; width: 100%; text-align: left; font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 400; color: var(--fg); background: transparent; border: 0; border-radius: 0;
+  padding: 2px 8px; cursor: pointer;
+}
+body.shell #term {
+  flex: 0 0 42%; margin: 0; padding: 8px; overflow: auto;
+  background: #09090b; color: #fafafa; white-space: pre-wrap; word-break: break-all;
+  font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+

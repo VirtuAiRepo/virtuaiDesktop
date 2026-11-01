@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>This computer</title>
+  <link rel="stylesheet" href="setup.css">
+</head>
+<body class="shell">
+  <div class="titlebar" data-tauri-drag-region></div>
+  <header>
+    <div>
+      <h2>This computer</h2>
+      <p id="folder" class="hint"></p>
+    </div>
+    <button type="button" class="secondary" id="web-only">Web page only</button>
+  </header>
+  <div id="tree"></div>
+  <pre id="term" tabindex="0"></pre>
+  <script src="shell.js"></script>
+</body>
+</html>

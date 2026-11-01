@@ -29,6 +29,13 @@ use url::Url;
 
 const MAIN: &str = "main";
 const SETTINGS: &str = "settings";
+/// The server's web chat, a child of the main window.
+const CHAT: &str = "chat";
+/// This computer's folder, drawn beside the chat when the setting is on.
+const SHELL: &str = "shell";
+const SHELL_WIDTH: f64 = 280.0;
+/// One level of names. A tree waits until the pane has somewhere to subscribe.
+const SHELL_LIST_CAP: usize = 400;
 /// A command waiting for the person, one window each: `approval-<id>`.
 const APPROVAL: &str = "approval-";
 
@@ -84,11 +91,6 @@ window.addEventListener("load", () => setTimeout(() => {
 }, 500));
 "#;
 
-/// Height of the bar the page draws on macOS; the traffic lights are centred
-/// in it. Keep in step with DESKTOP_TITLEBAR_HEIGHT in frontend/src/desktop/.
-#[cfg(target_os = "macos")]
-const TITLEBAR_HEIGHT: f64 = 40.0;
-
 /// The server's page draws the title bar, so it must be able to drag the
 /// window by it (Tauri's `data-tauri-drag-region` script). That is all it
 /// gets: two window permissions, for this one origin, and no command of ours.
@@ -119,6 +121,9 @@ struct AppState {
     pause_item: MenuItem<Wry>,
     /// Questions waiting in an approval window, by request id.
     approvals: Mutex<HashMap<String, ApprovalView>>,
+    /// Tray and app-menu entries for the folder pane. Same command id.
+    shell_items: Mutex<Vec<MenuItem<Wry>>>,
+    term: Mutex<Option<Term>>,
 }
 
 /// What the approval window shows (ui/approval.html).
@@ -154,9 +159,10 @@ fn set_status(app: &AppHandle, state: &str) {
     settings_changed(app);
 }
 
-/// Tells an open Settings window to read the settings again.
+/// Tells an open Settings window, and the folder pane, to read again.
 fn settings_changed(app: &AppHandle) {
     let _ = app.emit_to(SETTINGS, "settings-changed", ());
+    let _ = app.emit_to(SHELL, "settings-changed", ());
 }
 
 fn on_runner_event(app: &AppHandle, event: Event) {
@@ -417,7 +423,7 @@ fn handle_desktop_link(app: &AppHandle, url: &Url) {
 }
 
 fn open_main_window(app: &AppHandle) -> tauri::Result<()> {
-    if let Some(window) = app.get_webview_window(MAIN) {
+    if let Some(window) = app.get_window(MAIN) {
         window.show()?;
         return window.set_focus();
     }
@@ -438,48 +444,105 @@ fn opens_in_browser(url: &Url) -> bool {
 
 fn build_main_window(app: &AppHandle, url: WebviewUrl) -> tauri::Result<()> {
     let handle = app.clone();
-    let builder = WebviewWindowBuilder::new(app, MAIN, url)
+    // A bare window, then the chat as a child. A WebviewWindow webview always
+    // fills the window, so the folder pane could only cover the chat.
+    let builder = tauri::window::WindowBuilder::new(app, MAIN)
         .title("VirtuAI")
         .inner_size(1200.0, 800.0)
-        .min_inner_size(480.0, 480.0)
-        .initialization_script(desktop_script())
-        .on_navigation(move |url| {
-            if url.scheme() == "virtuai" {
-                handle_desktop_link(&handle, url);
-                return false;
-            }
-            true
-        })
-        // A link the page opens in a new tab (the web chat opens every link
-        // in a reply that way) goes to the person's browser. Without this the
-        // webview loaded it over the chat, with no way back. Navigation in the
-        // window itself is left alone: sign-in redirects must stay in it.
-        .on_new_window({
-            let handle = app.clone();
-            move |url, _features| {
-                if opens_in_browser(&url) {
-                    if let Err(err) = handle.opener().open_url(url.as_str(), None::<&str>) {
-                        eprintln!("[app] could not open {url} in the browser: {err}");
-                    }
-                    return tauri::webview::NewWindowResponse::Deny;
-                }
-                tauri::webview::NewWindowResponse::Allow
-            }
-        });
+        .min_inner_size(480.0, 480.0);
     // The page draws the bar in its own theme (light or dark) with back,
     // forward and the sidebar button; macOS keeps only the traffic lights,
     // centred in it. The inset's y is the bar height minus the 14 pt buttons.
     #[cfg(target_os = "macos")]
     let builder = builder
         .title_bar_style(tauri::TitleBarStyle::Overlay)
-        .hidden_title(true)
-        .traffic_light_position(tauri::LogicalPosition::new(16.0, (TITLEBAR_HEIGHT + 14.0) / 2.0));
+        .hidden_title(true);
     let window = builder.build()?;
+    window.add_child(
+        tauri::webview::WebviewBuilder::new(CHAT, url)
+            .initialization_script(desktop_script())
+            .on_navigation(move |url| {
+                if url.scheme() == "virtuai" {
+                    handle_desktop_link(&handle, url);
+                    return false;
+                }
+                true
+            })
+            // A link the page opens in a new tab (the web chat opens every link
+            // in a reply that way) goes to the person's browser. Without this the
+            // webview loaded it over the chat, with no way back. Navigation in the
+            // window itself is left alone: sign-in redirects must stay in it.
+            .on_new_window({
+                let handle = app.clone();
+                move |url, _features| {
+                    if opens_in_browser(&url) {
+                        if let Err(err) = handle.opener().open_url(url.as_str(), None::<&str>) {
+                            eprintln!("[app] could not open {url} in the browser: {err}");
+                        }
+                        return tauri::webview::NewWindowResponse::Deny;
+                    }
+                    tauri::webview::NewWindowResponse::Allow
+                }
+            }),
+        tauri::LogicalPosition::new(0.0, 0.0),
+        tauri::LogicalSize::new(1200.0, 800.0),
+    )?;
     #[cfg(target_os = "macos")]
     titlebar::narrow_to_traffic_lights(&window);
-    #[cfg(not(target_os = "macos"))]
-    let _ = window;
+    if app.state::<AppState>().settings.lock().unwrap().native_shell {
+        open_shell_pane(app);
+    } else {
+        place_panes(app);
+    }
     Ok(())
+}
+
+fn client_size(window: &tauri::Window) -> (f64, f64) {
+    let scale = window.scale_factor().unwrap_or(1.0).max(f64::MIN_POSITIVE);
+    match window.inner_size() {
+        Ok(size) => (size.width as f64 / scale, size.height as f64 / scale),
+        Err(_) => (1200.0, 800.0),
+    }
+}
+
+/// Moves the chat, and the folder pane when it is open. Never creates the
+/// pane: `add_child` from a resize handler deadlocks on Windows.
+fn place_panes(app: &AppHandle) {
+    let Some(window) = app.get_window(MAIN) else { return };
+    let Some(chat) = app.get_webview(CHAT) else { return };
+    let (width, height) = client_size(&window);
+    let want = app.state::<AppState>().settings.lock().unwrap().native_shell;
+    if !want {
+        if let Some(shell) = app.get_webview(SHELL) {
+            let _ = shell.close();
+        }
+        let _ = chat.set_position(tauri::LogicalPosition::new(0.0, 0.0));
+        let _ = chat.set_size(tauri::LogicalSize::new(width, height));
+        return;
+    }
+    let Some(shell) = app.get_webview(SHELL) else { return };
+    let shell_w = SHELL_WIDTH.min(width * 0.45);
+    let _ = shell.set_position(tauri::LogicalPosition::new(0.0, 0.0));
+    let _ = shell.set_size(tauri::LogicalSize::new(shell_w, height));
+    let _ = chat.set_position(tauri::LogicalPosition::new(shell_w, 0.0));
+    let _ = chat.set_size(tauri::LogicalSize::new((width - shell_w).max(0.0), height));
+}
+
+fn open_shell_pane(app: &AppHandle) {
+    if app.get_webview(SHELL).is_none() {
+        let Some(window) = app.get_window(MAIN) else { return };
+        let (width, height) = client_size(&window);
+        let shell_w = SHELL_WIDTH.min(width * 0.45);
+        if let Err(err) = window.add_child(
+            tauri::webview::WebviewBuilder::new(SHELL, WebviewUrl::App("shell.html".into())),
+            tauri::LogicalPosition::new(0.0, 0.0),
+            tauri::LogicalSize::new(shell_w, height),
+        ) {
+            eprintln!("[app] could not open the folder pane: {err}");
+            return;
+        }
+    }
+    place_panes(app);
 }
 
 /// Settings: the server, the working folder and the connector, in a window of
@@ -520,6 +583,7 @@ struct SettingsView {
     connector: String,
     connector_text: &'static str,
     paused: bool,
+    native_shell: bool,
     version: &'static str,
 }
 
@@ -531,6 +595,7 @@ struct SettingsView {
 fn get_settings(app: AppHandle, webview: Webview, state: State<'_, AppState>) -> Result<SettingsView, String> {
     own_page(&webview)?;
     let server = state.settings.lock().unwrap().server_url.clone();
+    let native_shell = state.settings.lock().unwrap().native_shell;
     let workdir = current_workdir(&app).map(|d| d.display().to_string());
     let connector = state.connector.lock().unwrap().clone();
     let paused = *state.paused.lock().unwrap();
@@ -540,6 +605,7 @@ fn get_settings(app: AppHandle, webview: Webview, state: State<'_, AppState>) ->
         connector_text: status_text(&connector),
         connector,
         paused,
+        native_shell,
         version: env!("CARGO_PKG_VERSION"),
     })
 }
@@ -602,10 +668,12 @@ fn set_server(app: AppHandle, webview: Webview, state: State<'_, AppState>, url:
     start_runner(&app);
     settings_changed(&app);
     let target = Url::parse(&server).map_err(|e| e.to_string())?;
-    match app.get_webview_window(MAIN) {
-        Some(window) => {
-            window.navigate(target).map_err(|e| e.to_string())?;
-            let _ = window.show();
+    match app.get_webview(CHAT) {
+        Some(chat) => {
+            chat.navigate(target).map_err(|e| e.to_string())?;
+            if let Some(window) = app.get_window(MAIN) {
+                let _ = window.show();
+            }
         }
         None => open_main_window(&app).map_err(|e| e.to_string())?,
     }
@@ -633,6 +701,151 @@ fn set_paused(app: AppHandle, webview: Webview, paused: bool) -> Result<(), Stri
     Ok(())
 }
 
+#[tauri::command(async)]
+fn set_native_shell(app: AppHandle, webview: Webview, enabled: bool) -> Result<(), String> {
+    own_page(&webview)?;
+    toggle_native_shell(&app, enabled)
+}
+
+fn toggle_native_shell(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    {
+        let state = app.state::<AppState>();
+        let mut settings = state.settings.lock().unwrap();
+        settings.native_shell = enabled;
+        settings.save(&state.config_dir).map_err(|e| e.to_string())?;
+    }
+    if enabled {
+        open_shell_pane(app);
+        start_term(app);
+    } else {
+        stop_term(app);
+        place_panes(app);
+    }
+    let label = if enabled { "Web page only" } else { "Folder and terminal" };
+    for item in app.state::<AppState>().shell_items.lock().unwrap().iter() {
+        let _ = item.set_text(label);
+    }
+    settings_changed(app);
+    Ok(())
+}
+
+/// A directory under the working folder, or why it is not.
+fn within_workdir(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let root = root.canonicalize().map_err(|e| e.to_string())?;
+    if rel.is_empty() {
+        return Ok(root);
+    }
+    if rel.contains('\0') {
+        return Err("That folder is outside the working folder.".into());
+    }
+    let canon = root.join(rel).canonicalize().map_err(|_| "That folder is not here.".to_string())?;
+    if !canon.starts_with(&root) {
+        return Err("That folder is outside the working folder.".into());
+    }
+    Ok(canon)
+}
+
+#[derive(Serialize)]
+struct FolderEntry {
+    name: String,
+    path: String,
+    dir: bool,
+}
+
+#[derive(Serialize)]
+struct FolderListing {
+    entries: Vec<FolderEntry>,
+    truncated: bool,
+}
+
+/// One level of names under `rel` (empty is the working folder). The server's
+/// page cannot call it.
+#[tauri::command(async)]
+fn list_workdir(app: AppHandle, webview: Webview, rel: Option<String>) -> Result<FolderListing, String> {
+    own_page(&webview)?;
+    let root = current_workdir(&app).ok_or_else(|| "Pick a working folder first.".to_string())?;
+    let rel = rel.unwrap_or_default();
+    let dir = within_workdir(&root, &rel)?;
+    let mut entries = Vec::new();
+    for item in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+        let item = item.map_err(|e| e.to_string())?;
+        let name = item.file_name().to_string_lossy().into_owned();
+        if name == "." || name == ".." {
+            continue;
+        }
+        let path = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+        let is_dir = item.path().is_dir();
+        entries.push(FolderEntry { name, path, dir: is_dir });
+    }
+    entries.sort_by(|a, b| b.dir.cmp(&a.dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    let truncated = entries.len() > SHELL_LIST_CAP;
+    entries.truncate(SHELL_LIST_CAP);
+    Ok(FolderListing { entries, truncated })
+}
+
+struct Term {
+    writer: Mutex<Box<dyn std::io::Write + Send>>,
+    child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
+}
+
+fn start_term(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    if state.term.lock().unwrap().is_some() {
+        return;
+    }
+    let Some(workdir) = current_workdir(app) else { return };
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    let system = portable_pty::native_pty_system();
+    let Ok(pair) = system.openpty(portable_pty::PtySize {
+        rows: 24, cols: 80, pixel_width: 0, pixel_height: 0,
+    }) else {
+        return;
+    };
+    let mut cmd = portable_pty::CommandBuilder::new(shell);
+    cmd.cwd(workdir);
+    let Ok(child) = pair.slave.spawn_command(cmd) else { return };
+    let Ok(mut reader) = pair.master.try_clone_reader() else { return };
+    let Ok(writer) = pair.master.take_writer() else { return };
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let _ = handle.emit_to(SHELL, "term-data", text);
+                }
+            }
+        }
+    });
+    *state.term.lock().unwrap() = Some(Term {
+        writer: Mutex::new(writer),
+        child: Mutex::new(child),
+    });
+}
+
+fn stop_term(app: &AppHandle) {
+    if let Some(term) = app.state::<AppState>().term.lock().unwrap().take() {
+        let _ = term.child.lock().unwrap().kill();
+    }
+}
+
+#[tauri::command(async)]
+fn term_write(app: AppHandle, webview: Webview, data: String) -> Result<(), String> {
+    own_page(&webview)?;
+    let state = app.state::<AppState>();
+    let guard = state.term.lock().unwrap();
+    let Some(term) = guard.as_ref() else {
+        return Err("The terminal is not open.".into());
+    };
+    let mut writer = term.writer.lock().unwrap();
+    use std::io::Write;
+    writer.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+    writer.flush().map_err(|e| e.to_string())
+}
+
 fn pause_connector(app: &AppHandle, paused: bool) {
     let state = app.state::<AppState>();
     *state.paused.lock().unwrap() = paused;
@@ -657,6 +870,10 @@ fn on_menu(app: &AppHandle, id: &str) {
             let paused = !*state.paused.lock().unwrap();
             pause_connector(app, paused);
         }
+        "native_shell" => {
+            let enabled = !state.settings.lock().unwrap().native_shell;
+            let _ = toggle_native_shell(app, enabled);
+        }
         "workdir" => open_workdir(app),
         "choose_workdir" => choose_workdir(app),
         "settings" => open_settings(app),
@@ -676,9 +893,14 @@ fn app_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let menu = Menu::default(app)?;
     if let Some(app_submenu) = menu.items()?.first().and_then(|item| item.as_submenu().cloned()) {
         let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
+        let enabled = app.state::<AppState>().settings.lock().unwrap().native_shell;
+        let label = if enabled { "Web page only" } else { "Folder and terminal" };
+        let shell = MenuItem::with_id(app, "native_shell", label, true, None::<&str>)?;
+        app.state::<AppState>().shell_items.lock().unwrap().push(shell.clone());
         // After "About VirtuAI" and its separator.
-        app_submenu.insert(&settings, 2)?;
-        app_submenu.insert(&PredefinedMenuItem::separator(app)?, 3)?;
+        app_submenu.insert(&shell, 2)?;
+        app_submenu.insert(&settings, 3)?;
+        app_submenu.insert(&PredefinedMenuItem::separator(app)?, 4)?;
     }
     Ok(menu)
 }
@@ -694,6 +916,9 @@ pub fn run() {
             choose_folder,
             open_folder,
             set_paused,
+            set_native_shell,
+            list_workdir,
+            term_write,
             approval_details,
             answer_approval
         ])
@@ -703,6 +928,8 @@ pub fn run() {
                 runner::set_bundled_runner_dir(resources.join("runner"));
             }
             let settings = Settings::load(&config_dir);
+            let shell_label = if settings.native_shell { "Web page only" } else { "Folder and terminal" };
+            let shell_item = MenuItem::with_id(app, "native_shell", shell_label, true, None::<&str>)?;
 
             let status_item = MenuItem::with_id(app, "status", status_text("off"), false, None::<&str>)?;
             let pause_item = MenuItem::with_id(app, "pause", "Pause connector", true, None::<&str>)?;
@@ -712,6 +939,7 @@ pub fn run() {
                     &status_item,
                     &PredefinedMenuItem::separator(app)?,
                     &MenuItem::with_id(app, "open", "Open VirtuAI", true, None::<&str>)?,
+                    &shell_item,
                     &pause_item,
                     &MenuItem::with_id(app, "workdir", "Open working folder", true, None::<&str>)?,
                     &MenuItem::with_id(app, "choose_workdir", "Choose working folder…", true, None::<&str>)?,
@@ -742,8 +970,6 @@ pub fn run() {
                 tray = tray.icon(icon.clone());
             }
             tray.build(app)?;
-            #[cfg(target_os = "macos")]
-            app.set_menu(app_menu(app.handle())?)?;
 
             let handle = app.handle().clone();
             let runner = Runner::new(Arc::new(move |event| on_runner_event(&handle, event)));
@@ -755,13 +981,20 @@ pub fn run() {
                 connector: Mutex::new("off".into()),
                 status_item,
                 pause_item,
+                shell_items: Mutex::new(vec![shell_item]),
+                term: Mutex::new(None),
                 approvals: Mutex::new(HashMap::new()),
             });
+            #[cfg(target_os = "macos")]
+            app.set_menu(app_menu(app.handle())?)?;
 
             if let Some(server) = app.state::<AppState>().settings.lock().unwrap().server_url.clone() {
                 allow_title_bar_dragging(app.handle(), &server);
             }
             open_main_window(app.handle())?;
+            if app.state::<AppState>().settings.lock().unwrap().native_shell {
+                start_term(app.handle());
+            }
             start_runner(app.handle());
             Ok(())
         })
@@ -769,9 +1002,10 @@ pub fn run() {
             // AppKit re-lays out the title bar on these; narrow it again.
             #[cfg(target_os = "macos")]
             if window.label() == MAIN && matches!(event, WindowEvent::Resized(_) | WindowEvent::Focused(_)) {
-                if let Some(webview_window) = window.app_handle().get_webview_window(window.label()) {
-                    titlebar::narrow_to_traffic_lights(&webview_window);
-                }
+                titlebar::narrow_to_traffic_lights(window);
+            }
+            if window.label() == MAIN && matches!(event, WindowEvent::Resized(_)) {
+                place_panes(window.app_handle());
             }
             // Closing the window keeps the connector running in the menu bar;
             // "Quit VirtuAI" is what stops it.
