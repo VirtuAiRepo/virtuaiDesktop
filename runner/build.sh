@@ -49,10 +49,19 @@ else
   PKG="virtuai-cli==$VERSION"; [ -n "$EXTRAS" ] && PKG="virtuai-cli[$EXTRAS]==$VERSION"
 fi
 echo "build.sh: freezing $PKG" >&2
-# --refresh-package: the CI restores uv's cache from an earlier run, whose copy
-# of PyPI's index for virtuai-cli predates a version published minutes ago —
-# 0.2.8 and 0.2.9 each failed once with "no version of virtuai-cli==…".
-VIRTUAL_ENV="$BUILD/venv" uv pip install -q --refresh-package virtuai-cli "$PKG" "pyinstaller==6.22.3"
+# The index lags the upload, and a cache restored from the previous release
+# still names the old version. --refresh drops both. 0.2.8, 0.2.9 and 0.3.0
+# each died once with "no version of virtuai-cli==…" while the other OS built.
+for attempt in 1 2 3 4 5 6; do
+  if VIRTUAL_ENV="$BUILD/venv" uv pip install -q --refresh "$PKG" "pyinstaller==6.22.3"; then
+    break
+  fi
+  if [ "$attempt" = 6 ]; then
+    exit 1
+  fi
+  echo "build.sh: $PKG is not on the index yet" >&2
+  sleep 15
+done
 
 args=(
   --noconfirm --clean --onedir --console --name virtuai
