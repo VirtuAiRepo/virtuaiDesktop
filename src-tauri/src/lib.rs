@@ -123,6 +123,7 @@ struct AppState {
     approvals: Mutex<HashMap<String, ApprovalView>>,
     /// Tray and app-menu entries for the folder pane. Same command id.
     shell_items: Mutex<Vec<MenuItem<Wry>>>,
+    term: Mutex<Option<Term>>,
 }
 
 /// What the approval window shows (ui/approval.html).
@@ -715,10 +716,12 @@ fn toggle_native_shell(app: &AppHandle, enabled: bool) -> Result<(), String> {
     }
     if enabled {
         open_shell_pane(app);
+        start_term(app);
     } else {
+        stop_term(app);
         place_panes(app);
     }
-    let label = if enabled { "Web page only" } else { "Folder beside the chat" };
+    let label = if enabled { "Web page only" } else { "Folder and terminal" };
     for item in app.state::<AppState>().shell_items.lock().unwrap().iter() {
         let _ = item.set_text(label);
     }
@@ -780,6 +783,69 @@ fn list_workdir(app: AppHandle, webview: Webview, rel: Option<String>) -> Result
     Ok(FolderListing { entries, truncated })
 }
 
+struct Term {
+    writer: Mutex<Box<dyn std::io::Write + Send>>,
+    child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
+}
+
+fn start_term(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    if state.term.lock().unwrap().is_some() {
+        return;
+    }
+    let Some(workdir) = current_workdir(app) else { return };
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    let system = portable_pty::native_pty_system();
+    let Ok(pair) = system.openpty(portable_pty::PtySize {
+        rows: 24, cols: 80, pixel_width: 0, pixel_height: 0,
+    }) else {
+        return;
+    };
+    let mut cmd = portable_pty::CommandBuilder::new(shell);
+    cmd.cwd(workdir);
+    let Ok(child) = pair.slave.spawn_command(cmd) else { return };
+    let Ok(mut reader) = pair.master.try_clone_reader() else { return };
+    let Ok(writer) = pair.master.take_writer() else { return };
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let _ = handle.emit_to(SHELL, "term-data", text);
+                }
+            }
+        }
+    });
+    *state.term.lock().unwrap() = Some(Term {
+        writer: Mutex::new(writer),
+        child: Mutex::new(child),
+    });
+}
+
+fn stop_term(app: &AppHandle) {
+    if let Some(term) = app.state::<AppState>().term.lock().unwrap().take() {
+        let _ = term.child.lock().unwrap().kill();
+    }
+}
+
+#[tauri::command(async)]
+fn term_write(app: AppHandle, webview: Webview, data: String) -> Result<(), String> {
+    own_page(&webview)?;
+    let state = app.state::<AppState>();
+    let guard = state.term.lock().unwrap();
+    let Some(term) = guard.as_ref() else {
+        return Err("The terminal is not open.".into());
+    };
+    let mut writer = term.writer.lock().unwrap();
+    use std::io::Write;
+    writer.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+    writer.flush().map_err(|e| e.to_string())
+}
+
 fn pause_connector(app: &AppHandle, paused: bool) {
     let state = app.state::<AppState>();
     *state.paused.lock().unwrap() = paused;
@@ -828,7 +894,7 @@ fn app_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     if let Some(app_submenu) = menu.items()?.first().and_then(|item| item.as_submenu().cloned()) {
         let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
         let enabled = app.state::<AppState>().settings.lock().unwrap().native_shell;
-        let label = if enabled { "Web page only" } else { "Folder beside the chat" };
+        let label = if enabled { "Web page only" } else { "Folder and terminal" };
         let shell = MenuItem::with_id(app, "native_shell", label, true, None::<&str>)?;
         app.state::<AppState>().shell_items.lock().unwrap().push(shell.clone());
         // After "About VirtuAI" and its separator.
@@ -852,6 +918,7 @@ pub fn run() {
             set_paused,
             set_native_shell,
             list_workdir,
+            term_write,
             approval_details,
             answer_approval
         ])
@@ -861,7 +928,7 @@ pub fn run() {
                 runner::set_bundled_runner_dir(resources.join("runner"));
             }
             let settings = Settings::load(&config_dir);
-            let shell_label = if settings.native_shell { "Web page only" } else { "Folder beside the chat" };
+            let shell_label = if settings.native_shell { "Web page only" } else { "Folder and terminal" };
             let shell_item = MenuItem::with_id(app, "native_shell", shell_label, true, None::<&str>)?;
 
             let status_item = MenuItem::with_id(app, "status", status_text("off"), false, None::<&str>)?;
@@ -915,6 +982,7 @@ pub fn run() {
                 status_item,
                 pause_item,
                 shell_items: Mutex::new(vec![shell_item]),
+                term: Mutex::new(None),
                 approvals: Mutex::new(HashMap::new()),
             });
             #[cfg(target_os = "macos")]
@@ -924,6 +992,9 @@ pub fn run() {
                 allow_title_bar_dragging(app.handle(), &server);
             }
             open_main_window(app.handle())?;
+            if app.state::<AppState>().settings.lock().unwrap().native_shell {
+                start_term(app.handle());
+            }
             start_runner(app.handle());
             Ok(())
         })

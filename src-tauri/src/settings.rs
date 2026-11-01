@@ -16,9 +16,9 @@ pub struct Settings {
     /// Where the agents work. None until the person picks one: ~/virtuai.
     #[serde(default)]
     pub workdir: Option<String>,
-    /// Draws this computer's folder beside the chat. The page keeps its
-    /// own terminal. Off, the window is the web page alone. Missing from
-    /// older files, so an update opens the pane; "Web page only" turns it off.
+    /// Draws this computer's folder and a terminal beside the chat.
+    /// Off, the window is the web page alone. Missing from older files, so
+    /// an update opens the new pane; "Web page only" turns it off.
     #[serde(default = "default_native_shell")]
     pub native_shell: bool,
 }
