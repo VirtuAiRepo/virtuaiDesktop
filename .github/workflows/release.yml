@@ -59,6 +59,17 @@ jobs:
           version="${TAG#v}"
           jq --arg v "$version" '.version = $v' src-tauri/tauri.conf.json > tmp.json
           mv tmp.json src-tauri/tauri.conf.json
+          # Settings and the title bar read CARGO_PKG_VERSION, which a tag
+          # used to leave at 0.1.0 while the DMG said 0.2.x.
+          python3 - "$version" <<'PY'
+          import re, sys
+          version, path = sys.argv[1], "src-tauri/Cargo.toml"
+          text = open(path).read()
+          text, n = re.subn(r'(?m)^version = "[^"]*"', f'version = "{version}"', text, count=1)
+          if n != 1:
+              raise SystemExit("Cargo.toml has no version")
+          open(path, "w").write(text)
+          PY
 
       # Into a keychain of its own, before anything signs: runner/build.sh signs
       # the frozen CLI with it, then Tauri signs the app around it.
@@ -179,6 +190,17 @@ jobs:
           version="${TAG#v}"
           jq --arg v "$version" '.version = $v' src-tauri/tauri.conf.json > tmp.json
           mv tmp.json src-tauri/tauri.conf.json
+          # Settings and the title bar read CARGO_PKG_VERSION, which a tag
+          # used to leave at 0.1.0 while the DMG said 0.2.x.
+          python3 - "$version" <<'PY'
+          import re, sys
+          version, path = sys.argv[1], "src-tauri/Cargo.toml"
+          text = open(path).read()
+          text, n = re.subn(r'(?m)^version = "[^"]*"', f'version = "{version}"', text, count=1)
+          if n != 1:
+              raise SystemExit("Cargo.toml has no version")
+          open(path, "w").write(text)
+          PY
 
       - run: npm ci
 
