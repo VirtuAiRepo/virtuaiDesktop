@@ -16,6 +16,10 @@ pub struct Settings {
     /// Where the agents work. None until the person picks one: ~/virtuai.
     #[serde(default)]
     pub workdir: Option<String>,
+    /// Which VirtuAI agent the local IDE talks to. The server still chooses
+    /// that agent's model.
+    #[serde(default)]
+    pub agent_id: Option<String>,
 }
 
 /// ~/virtuai, the folder the CLI's own messages and the pairing card name.
@@ -166,6 +170,7 @@ mod tests {
         let loaded = Settings::load(&dir);
         assert_eq!(loaded.server_url.as_deref(), Some("https://a.example"));
         assert_eq!(loaded.workdir, None);
+        assert_eq!(loaded.agent_id, None);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -175,9 +180,11 @@ mod tests {
         let saved = Settings {
             server_url: Some("https://a.example".into()),
             workdir: Some("/Users/ana/virtuai".into()),
+            agent_id: Some("agent-1".into()),
         };
         saved.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir).server_url.as_deref(), Some("https://a.example"));
+        assert_eq!(Settings::load(&dir).agent_id.as_deref(), Some("agent-1"));
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -2,7 +2,7 @@
   "name": "virtuai-desktop",
   "private": true,
   "license": "Apache-2.0",
-  "version": "0.3.0",
+  "version": "0.4.1",
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",

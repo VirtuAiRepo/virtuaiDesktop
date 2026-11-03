@@ -38,6 +38,19 @@
       </div>
     </section>
 
+    <section>
+      <h2>Agent</h2>
+      <p class="hint">The agent id on the server. The IDE uses it after the connector is connected. The server still chooses the model.</p>
+      <form id="agent-form">
+        <input id="agent" type="text" required placeholder="agent id" autocomplete="off" spellcheck="false">
+        <button type="submit">Save</button>
+      </form>
+      <p id="agent-note" class="note" role="status"></p>
+      <div class="row">
+        <button type="button" class="secondary" id="open-console">Open console</button>
+      </div>
+    </section>
+
     <p class="version">VirtuAI Desktop <span id="version"></span></p>
   </main>
   <script src="settings.js"></script>

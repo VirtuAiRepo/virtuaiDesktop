@@ -61,3 +61,40 @@ button.secondary {
 .note { min-height: 1.5em; margin: 8px 0 0; color: var(--fg-subtle); font-size: 13px; }
 .note.error { color: var(--danger); }
 .version { margin: 0; color: var(--fg-subtle); font-size: 12px; }
+label.check { display: flex; align-items: center; gap: 8px; }
+label.check input { width: auto; flex: none; }
+body.shell {
+  display: flex; flex-direction: column; height: 100vh; width: 100%; min-width: 0; min-height: 0;
+  padding-top: 40px; overflow: hidden; background: var(--bg);
+}
+body.shell {
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  border-right: 1px solid var(--border);
+}
+body.shell header {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 4px 8px 8px 12px;
+}
+body.shell #name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: 600;
+}
+body.shell #web-only {
+  flex: none; margin: 0; padding: 2px 6px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--fg-subtle); font: inherit; font-weight: 400;
+}
+body.shell #web-only:hover { background: var(--border); color: var(--fg); }
+body.shell #tree { flex: 1; min-height: 0; width: 100%; max-width: 100%; min-width: 0; overflow-x: hidden; overflow-y: auto; padding: 0 6px 12px; }
+body.shell ul, body.shell li { width: 100%; max-width: 100%; min-width: 0; }
+body.shell ul { list-style: none; margin: 0; padding: 0; }
+body.shell li ul { padding-left: 12px; }
+body.shell .entry {
+  display: block; width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box;
+  text-align: left; direction: ltr;
+  font: inherit; color: var(--fg); background: transparent; border-radius: 6px;
+  padding: 3px 8px; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+body.shell .entry.dir { font-weight: 600; }
+body.shell .entry:hover { background: var(--border); }
+

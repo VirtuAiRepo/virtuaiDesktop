@@ -1,17 +1,15 @@
-//! VirtuAI Desktop: the server's web chat in a native window, plus the local
-//! connector (`virtuai run`) supervised from the menu bar.
-//!
-//! Design: docs/workitems/desktop-connector.md. The window loads the server's
-//! own web chat, so the app ships no copy of the frontend and the remote page
-//! gets no IPC. The only bridge from the page to the app is navigating to a
-//! `virtuai://` link, which `on_navigation` intercepts.
+//! VirtuAI Desktop: the server's web chat until the connector is paired,
+//! then the local IDE host when a client build is configured. The menu bar
+//! keeps supervising `virtuai run`.
 
+mod ide;
 mod runner;
 mod settings;
 #[cfg(target_os = "macos")]
 mod titlebar;
 
-use runner::{Event, Runner};
+use ide::IdeHost;
+use runner::{Event, OnEvent, Runner};
 use settings::Settings;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -29,6 +27,10 @@ use url::Url;
 
 const MAIN: &str = "main";
 const SETTINGS: &str = "settings";
+/// The server's console, in its own window. Not in the capability set, so
+/// that page cannot call the app, and its cookie is never written onto the
+/// IDE's origin.
+const CONSOLE: &str = "console";
 /// A command waiting for the person, one window each: `approval-<id>`.
 const APPROVAL: &str = "approval-";
 
@@ -112,6 +114,7 @@ struct AppState {
     settings: Mutex<Settings>,
     config_dir: PathBuf,
     runner: Runner,
+    ide: IdeHost,
     paused: Mutex<bool>,
     /// The runner's last state, for the Settings window.
     connector: Mutex<String>,
@@ -152,6 +155,11 @@ fn set_status(app: &AppHandle, state: &str) {
     let _ = app_state.status_item.set_text(status_text(state));
     *app_state.connector.lock().unwrap() = state.to_string();
     settings_changed(app);
+    if state == "connected" {
+        show_ide(app);
+    } else {
+        app_state.ide.stop();
+    }
 }
 
 /// Tells an open Settings window to read the settings again.
@@ -321,6 +329,68 @@ fn start_runner(app: &AppHandle) {
         (Some(_), None) => set_status(app, "error"),
         (None, _) => set_status(app, "off"),
     }
+}
+
+/// After the connector is paired, and only with a built client, the main
+/// window leaves the server's web chat for the local IDE. The console stays
+/// a separate window on the server's origin.
+fn show_ide(app: &AppHandle) -> bool {
+    let state = app.state::<AppState>();
+    if state.connector.lock().unwrap().as_str() != "connected" {
+        return false;
+    }
+    let settings = state.settings.lock().unwrap().clone();
+    let Some(server) = settings.server_url else {
+        return false;
+    };
+    let Some(agent) = settings.agent_id.filter(|id| !id.is_empty()) else {
+        return false;
+    };
+    let Some(workdir) = current_workdir(app) else {
+        return false;
+    };
+    let Ok(python) = std::env::var("VIRTUAI_IDE_PYTHON") else {
+        return false;
+    };
+    let Ok(repo) = std::env::var("VIRTUAI_IDE_ROOT") else {
+        return false;
+    };
+    let Ok(client) = std::env::var("VIRTUAI_IDE_CLIENT") else {
+        return false;
+    };
+    if !ide::client_ready(Path::new(&client)) {
+        return false;
+    }
+    let spec = ide::Spec {
+        python,
+        repo,
+        client,
+        server,
+        agent,
+        workdir: workdir.display().to_string(),
+    };
+    if !state.ide.ensure(&spec) {
+        return false;
+    }
+    let origin = format!("http://127.0.0.1:{}", ide::PORT);
+    allow_title_bar_dragging(app, &origin);
+    let Ok(url) = Url::parse(&format!("{origin}/")) else {
+        return false;
+    };
+    if let Some(window) = app.get_webview_window(MAIN) {
+        let already = match window.url() {
+            Ok(current) => current.host_str() == Some("127.0.0.1") && current.port() == Some(ide::PORT),
+            Err(_) => false,
+        };
+        if !already {
+            if let Err(err) = window.navigate(url) {
+                eprintln!("[ide] could not open the IDE: {err}");
+                return false;
+            }
+        }
+        let _ = window.show();
+    }
+    true
 }
 
 fn open_workdir(app: &AppHandle) {
@@ -494,8 +564,8 @@ fn open_settings(app: &AppHandle) {
     }
     let built = WebviewWindowBuilder::new(app, SETTINGS, WebviewUrl::App("settings.html".into()))
         .title("VirtuAI Settings")
-        .inner_size(560.0, 560.0)
-        .min_inner_size(420.0, 440.0)
+        .inner_size(560.0, 700.0)
+        .min_inner_size(420.0, 560.0)
         .build();
     if let Err(err) = built {
         eprintln!("[app] could not open Settings: {err}");
@@ -517,6 +587,7 @@ fn own_page(webview: &Webview) -> Result<(), String> {
 struct SettingsView {
     server: Option<String>,
     workdir: Option<String>,
+    agent: Option<String>,
     connector: String,
     connector_text: &'static str,
     paused: bool,
@@ -531,11 +602,13 @@ struct SettingsView {
 fn get_settings(app: AppHandle, webview: Webview, state: State<'_, AppState>) -> Result<SettingsView, String> {
     own_page(&webview)?;
     let server = state.settings.lock().unwrap().server_url.clone();
+    let agent = state.settings.lock().unwrap().agent_id.clone();
     let workdir = current_workdir(&app).map(|d| d.display().to_string());
     let connector = state.connector.lock().unwrap().clone();
     let paused = *state.paused.lock().unwrap();
     Ok(SettingsView {
         server,
+        agent,
         workdir,
         connector_text: status_text(&connector),
         connector,
@@ -573,7 +646,9 @@ fn answer_approval(
         return Err("This request is no longer waiting.".into());
     };
     let scope = if approved && view.scopes.contains(&scope) { scope } else { "once".into() };
-    state.runner.answer(&id, approved, Some(&scope));
+    if !state.ide.answer(&id, approved, Some(&scope)) {
+        state.runner.answer(&id, approved, Some(&scope));
+    }
     if let Some(window) = app.get_webview_window(&format!("{APPROVAL}{id}")) {
         let _ = window.destroy();
     }
@@ -601,6 +676,9 @@ fn set_server(app: AppHandle, webview: Webview, state: State<'_, AppState>, url:
     allow_title_bar_dragging(&app, &server);
     start_runner(&app);
     settings_changed(&app);
+    if show_ide(&app) {
+        return Ok(server);
+    }
     let target = Url::parse(&server).map_err(|e| e.to_string())?;
     match app.get_webview_window(MAIN) {
         Some(window) => {
@@ -633,6 +711,51 @@ fn set_paused(app: AppHandle, webview: Webview, paused: bool) -> Result<(), Stri
     Ok(())
 }
 
+#[tauri::command(async)]
+fn set_agent(app: AppHandle, webview: Webview, state: State<'_, AppState>, agent: String) -> Result<(), String> {
+    own_page(&webview)?;
+    let agent = agent.trim();
+    if agent.is_empty() || agent.len() > 200 || agent.chars().any(|c| c.is_control()) {
+        return Err("Enter the agent id from the server.".into());
+    }
+    {
+        let mut settings = state.settings.lock().unwrap();
+        settings.agent_id = Some(agent.to_string());
+        settings.save(&state.config_dir).map_err(|e| e.to_string())?;
+    }
+    settings_changed(&app);
+    show_ide(&app);
+    Ok(())
+}
+
+/// The server's console, beside the IDE. Closing it leaves the IDE where it is.
+/// This window is not given the app's commands, and nothing copies its cookie
+/// onto 127.0.0.1.
+#[tauri::command(async)]
+fn open_console(app: AppHandle, webview: Webview, state: State<'_, AppState>) -> Result<(), String> {
+    own_page(&webview)?;
+    let server = state
+        .settings
+        .lock()
+        .unwrap()
+        .server_url
+        .clone()
+        .ok_or_else(|| "Save a server first.".to_string())?;
+    let url = Url::parse(&server).map_err(|e| e.to_string())?;
+    if let Some(window) = app.get_webview_window(CONSOLE) {
+        window.navigate(url).map_err(|e| e.to_string())?;
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(&app, CONSOLE, WebviewUrl::External(url))
+        .title("VirtuAI")
+        .inner_size(1100.0, 760.0)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn pause_connector(app: &AppHandle, paused: bool) {
     let state = app.state::<AppState>();
     *state.paused.lock().unwrap() = paused;
@@ -661,6 +784,7 @@ fn on_menu(app: &AppHandle, id: &str) {
         "choose_workdir" => choose_workdir(app),
         "settings" => open_settings(app),
         "quit" => {
+            state.ide.stop();
             state.runner.stop();
             app.exit(0);
         }
@@ -694,6 +818,8 @@ pub fn run() {
             choose_folder,
             open_folder,
             set_paused,
+            set_agent,
+            open_console,
             approval_details,
             answer_approval
         ])
@@ -746,11 +872,14 @@ pub fn run() {
             app.set_menu(app_menu(app.handle())?)?;
 
             let handle = app.handle().clone();
-            let runner = Runner::new(Arc::new(move |event| on_runner_event(&handle, event)));
+            let on_event: OnEvent = Arc::new(move |event| on_runner_event(&handle, event));
+            let runner = Runner::new(on_event.clone());
+            let ide = IdeHost::new(on_event);
             app.manage(AppState {
                 settings: Mutex::new(settings),
                 config_dir,
                 runner,
+                ide,
                 paused: Mutex::new(false),
                 connector: Mutex::new("off".into()),
                 status_item,
@@ -785,7 +914,9 @@ pub fn run() {
 
     app.run(|app, event| match event {
         RunEvent::ExitRequested { .. } | RunEvent::Exit => {
-            app.state::<AppState>().runner.stop();
+            let state = app.state::<AppState>();
+            state.ide.stop();
+            state.runner.stop();
         }
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => {

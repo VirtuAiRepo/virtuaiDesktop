@@ -29,6 +29,14 @@ The app asks for your VirtuAI server's address the first time, then shows its
 sign-in. Agents work in a folder you choose (`~/virtuai` by default); the app
 refuses the disk's root and any folder that holds its own data.
 
+**Local IDE.** This is not part of a release. With a VirtuAI checkout and a
+built ThinkRail client, set `VIRTUAI_IDE_PYTHON` (the checkout's virtualenv),
+`VIRTUAI_IDE_ROOT` (the checkout), and `VIRTUAI_IDE_CLIENT` (the directory
+`scripts/build_thinkrail_web.sh` writes). After the connector is connected and
+Settings has an agent id, the main window loads `http://127.0.0.1:8765/`.
+Settings → Open console opens the server in another window. Closing it leaves
+the IDE. The console's cookie is not copied onto that local origin.
+
 **Settings** (⌘, or VirtuAI → Settings… on macOS, the menu bar icon anywhere,
 or the gear in the chat's title bar) changes the server, the working folder,
 and pauses the connector. A new server needs its own sign-in, and its own
